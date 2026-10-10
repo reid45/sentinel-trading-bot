@@ -408,7 +408,12 @@ def main():
     on = store.get("engine_on")
     if (on is None or on) and not engine.halted():   # autonomous: resumes by itself after a restart (paper by default)
         engine.start()
-    srv = ThreadingHTTPServer(("127.0.0.1", port), H)
+    ThreadingHTTPServer.allow_reuse_address = os.name != "nt"          # on Windows SO_REUSEADDR lets two copies share a port, so one would serve a stale page
+    try:
+        srv = ThreadingHTTPServer(("127.0.0.1", port), H)
+    except OSError:
+        print("Sentinel is already running on port %d (or the port is busy). Close the other window first, then try again." % port)
+        raise SystemExit(1)
     print("Dashboard: http://localhost:%d   (webhook: POST /hook)" % port, flush=True)
     try:
         srv.serve_forever()
