@@ -1,0 +1,41 @@
+//@version=6
+// Trend-pullback strategy: trade with the 200 EMA trend, enter on RSI dips, ATR-based stop/target.
+// Paste into TradingView Pine Editor -> "Add to chart" -> check Strategy Tester for backtest.
+strategy("TrendPullback Bot", overlay=true, initial_capital=10000,
+     default_qty_type=strategy.percent_of_equity, default_qty_value=100,
+     commission_type=strategy.commission.percent, commission_value=0.05, slippage=2)
+
+emaLen   = input.int(200, "Trend EMA")
+rsiLen   = input.int(2,   "RSI length")
+rsiBuy   = input.int(10,  "RSI buy below")
+rsiSell  = input.int(90,  "RSI sell above")
+atrLen   = input.int(14,  "ATR length")
+stopMult = input.float(2.0, "Stop ATR x")
+tpMult   = input.float(3.0, "Target ATR x")
+riskPct  = input.float(1.0, "Risk % of equity per trade")
+useShort = input.bool(false, "Allow shorts")
+secret   = input.string("CHANGE_ME", "Webhook secret")
+
+ema = ta.ema(close, emaLen)
+rsi = ta.rsi(close, rsiLen)
+atr = ta.atr(atrLen)
+
+longSig  = close > ema and rsi < rsiBuy  and strategy.position_size == 0
+shortSig = useShort and close < ema and rsi > rsiSell and strategy.position_size == 0
+
+stopDist = atr * stopMult
+qtyL = (strategy.equity * riskPct / 100) / stopDist
+
+if longSig
+    strategy.entry("L", strategy.long, qty=qtyL,
+         alert_message='{"secret":"' + secret + '","action":"buy","symbol":"' + syminfo.ticker + '","price":' + str.tostring(close) + ',"stop":' + str.tostring(close - stopDist) + ',"tp":' + str.tostring(close + atr*tpMult) + '}')
+if shortSig
+    strategy.entry("S", strategy.short, qty=qtyL,
+         alert_message='{"secret":"' + secret + '","action":"sell","symbol":"' + syminfo.ticker + '","price":' + str.tostring(close) + ',"stop":' + str.tostring(close + stopDist) + ',"tp":' + str.tostring(close - atr*tpMult) + '}')
+
+strategy.exit("XL", "L", stop=close - stopDist, limit=close + atr*tpMult,
+     alert_message='{"secret":"' + secret + '","action":"close","symbol":"' + syminfo.ticker + '"}')
+strategy.exit("XS", "S", stop=close + stopDist, limit=close - atr*tpMult,
+     alert_message='{"secret":"' + secret + '","action":"close","symbol":"' + syminfo.ticker + '"}')
+
+plot(ema, "EMA", color.orange)

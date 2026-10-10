@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Sentinel</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%237c9cff'/%3E%3Ccircle cx='16' cy='16' r='5.5' fill='%230a0b10'/%3E%3C/svg%3E">
+<link rel="preload" href="vendor/fonts/inter.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="simple">
+<div id="bar"></div>
+<div id="boot"><div><div class="m"><i></i></div><p id="bootMsg">Connecting to markets</p></div></div>
+<div id="app">
+  <aside id="rail">
+    <div class="mark"><i></i></div>
+    <nav class="nav" id="nav"><div class="thumb"></div></nav>
+    <div class="rail-foot"><span class="led" id="railLed"></span></div>
+  </aside>
+  <div id="main">
+    <header id="topbar">
+      <h1 id="title">Trade</h1>
+      <span class="chip" id="engChip"><span class="led" id="engLed"></span><span id="engTxt">Connecting</span></span>
+      <span class="chip" id="modeChip">Paper</span>
+      <span class="grow"></span>
+      <div class="search" id="searchBtn"><svg class="i" data-i="search"></svg><span>Search or run a command</span><kbd>Ctrl K</kbd></div>
+      <span class="chip btn" id="acctChip" data-tip="Change account size and risk level"><svg class="i" data-i="wallet"></svg><b id="acctTxt" class="num">--</b></span>
+      <div class="seg" id="engSeg"><div class="thumb"></div><button data-v="run"><svg class="i" data-i="play"></svg>Run</button><button data-v="pause"><svg class="i" data-i="pause"></svg>Pause</button></div>
+      <button class="btn danger ico" id="killBtn" data-tip="Emergency stop: close everything and halt trading"><svg class="i" data-i="power"></svg></button>
+    </header>
+    <main id="views">
+      <section class="page on" id="p-trade"></section>
+      <section class="page" id="p-portfolio"></section>
+      <section class="page" id="p-lab"></section>
+      <section class="page" id="p-ai"></section>
+      <section class="page" id="p-settings"></section>
+      <div class="foot"><span>Sentinel &middot; paper trading is simulated, past results do not predict the future</span><span>Charts by <a href="https://www.tradingview.com/" target="_blank" rel="noopener">TradingView Lightweight Charts&trade;</a></span><span>Icons: Lucide &middot; Coins: cryptocurrency-icons</span></div>
+    </main>
+  </div>
+</div>
+<div id="toasts"></div>
+<div class="tip" id="tip"></div>
+<div class="scrim" id="scrim"><div class="sheet" id="sheet"></div></div>
+<script src="vendor/icons.js"></script>
+<script src="vendor/lwc.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

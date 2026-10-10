@@ -1,0 +1,425 @@
+"""Autonomous trading engine: polls bars, runs strategies, sizes by risk, enforces limits, journals everything.
+Paper mode simulates fills (same costs as the backtester). Live mode (futures only) routes through brokers.BinanceFutures."""
+import math, threading, time, traceback
+from concurrent.futures import ThreadPoolExecutor
+from . import data, analyst
+from .backtest import MARKET_COSTS, TF_HOURS
+from .strategies import STRATEGIES
+from . import indicators as I
+
+
+def now_ms():
+    return int(time.time() * 1000)
+
+
+class Engine:
+    def __init__(self, store, fetcher=None, pricer=None):
+        self.s = store
+        self.fetch = fetcher or data.fetch_recent
+        self.price = pricer or data.last_price
+        self.status = {}          # inst id -> dict for the dashboard
+        self.running = False
+        self.thread = None
+        self.lock = threading.RLock()
+        self.last_cycle = 0
+        self.last_snapshot = 0
+        self._broker = None
+
+    # ------------------------------------------------------------------ lifecycle
+    def start(self):
+        with self.lock:
+            if self.running:
+                return
+            self.running = True
+            self.s.put("engine_on", True)
+            self.thread = threading.Thread(target=self._loop, daemon=True)
+            self.thread.start()
+            self.s.event("info", "Engine started (%s mode)" % self.s.cfg["mode"])
+
+    def stop(self):
+        self.running = False
+        self.s.put("engine_on", False)
+        self.s.event("info", "Engine stopped")
+
+    def _loop(self):
+        while self.running:
+            try:
+                self.cycle()
+            except Exception:
+                self.s.event("error", "cycle crashed: " + traceback.format_exc().splitlines()[-1])
+            for _ in range(int(self.s.cfg["poll_seconds"])):
+                if not self.running:
+                    return
+                time.sleep(1)
+
+    # ------------------------------------------------------------------ accounting
+    def cash(self):
+        return self.s.get("cash", self.s.cfg["start_equity"])
+
+    @staticmethod
+    def upnl(p):
+        """Unrealized P&L after funding and the cost of closing right now (fee + slippage)."""
+        market = p["inst"].split(":")[0]
+        mc = MARKET_COSTS.get(market, MARKET_COSTS["futures"])
+        mark = p.get("mark", p["entry"])
+        return p["side"] * (mark - p["entry"]) * p["qty"] - p.get("fund", 0) - mark * p["qty"] * (mc["fee"] + mc["slip"])
+
+    def equity(self):
+        return self.cash() + sum(self.upnl(p) for p in self.s.positions().values())
+
+    def halted(self):
+        return bool(self.s.get("halted", False))
+
+    def broker(self):
+        if self._broker is None:
+            from . import brokers
+            self._broker = brokers.make_broker(self.s.cfg["broker"])
+        return self._broker
+
+    def live(self):
+        return self.s.cfg["mode"] == "live"
+
+    # ------------------------------------------------------------------ main cycle
+    def cycle(self):
+        cfg = self.s.cfg
+        t = now_ms()
+        def one(inst):
+            st = self.status.setdefault(inst["id"], {"last_ts": None, "price": None, "signal": 0, "error": None, "price_t": 0})
+            try:
+                self._process(inst, st)
+            except Exception as e:
+                st["error"] = str(e)[:120]
+        todo = [i for i in cfg["instruments"] if i["enabled"]]
+        for i in todo:
+            self.status.setdefault(i["id"], {"last_ts": None, "price": None, "signal": 0, "error": None, "price_t": 0})
+        with ThreadPoolExecutor(6) as ex:      # network-bound: poll all markets at once
+            list(ex.map(one, todo))
+        self._risk_guards()
+        self.last_cycle = t
+        if t - self.last_snapshot >= 60000:
+            self.s.add_equity(t, self.equity(), self.cash())
+            self.last_snapshot = t
+
+    def _process(self, inst, st):
+        tfms = data.TF_MS[inst["tf"]]
+        pos = self.s.positions().get(inst["id"])
+        t = now_ms()
+        # keep marks fresh: open positions every cycle, others every 2 min
+        if pos or t - st["price_t"] > 120000:
+            try:
+                st["price"], st["price_t"] = self.price(inst["market"], inst["symbol"]), t
+                if pos:
+                    pos["mark"] = st["price"]
+                    self.s.set_position(inst["id"], pos)
+            except Exception as e:
+                st["error"] = "price: " + str(e)[:80]
+        due = st["last_ts"] is None or t >= st["last_ts"] + 2 * tfms + 4000
+        st["next_bar"] = (st["last_ts"] + 2 * tfms) if st["last_ts"] else None
+        if not due:
+            return
+        hist = self.fetch(inst["market"], inst["symbol"], inst["tf"], 500)
+        if len(hist) < 250:
+            st["error"] = "only %d bars" % len(hist)
+            return
+        st["error"] = None
+        cl = [b[4] for b in hist]
+        st["spark"] = [round(x, 8) for x in cl[-48:]]
+        st["chg24"] = (cl[-1] / cl[-7] - 1) * 100 if len(cl) > 7 else 0.0
+        if st["last_ts"] is None:
+            st["last_ts"] = self.s.get("last_ts:" + inst["id"])
+        newest = hist[-1][0]
+        if st["last_ts"] is None:   # first run: act only if the latest bar JUST closed, otherwise baseline
+            fresh = t - (newest + tfms) < 15 * 60000
+            st["last_ts"] = hist[-2][0] if fresh else newest
+        for i, bar in enumerate(hist):
+            if bar[0] > st["last_ts"]:
+                self._on_bar(inst, hist[:i + 1], st)
+                st["last_ts"] = bar[0]
+                self.s.put("last_ts:" + inst["id"], bar[0])
+        st["next_bar"] = st["last_ts"] + 2 * tfms
+
+    # ------------------------------------------------------------------ per-bar logic
+    def _on_bar(self, inst, hist, st):
+        bar = hist[-1]
+        t, o, h, l, c, _ = bar
+        pos = self.s.positions().get(inst["id"])
+        mc = MARKET_COSTS[inst["market"]]
+        if pos:
+            pos["mark"] = c
+            pos["fund"] = pos.get("fund", 0) + mc["funding_8h"] * TF_HOURS[inst["tf"]] / 8 * pos["qty"] * c
+            hit = None
+            if pos["side"] == 1:
+                if l <= pos["stop"]:
+                    hit = ("stop", min(pos["stop"], o))
+                elif pos.get("tp") and h >= pos["tp"]:
+                    hit = ("target", pos["tp"])
+            else:
+                if h >= pos["stop"]:
+                    hit = ("stop", max(pos["stop"], o))
+                elif pos.get("tp") and l <= pos["tp"]:
+                    hit = ("target", pos["tp"])
+            if hit:
+                self._close(inst, pos, hit[1], hit[0], exchange_side=True)
+                pos = None
+            elif inst["params"].get("trail") and pos.get("source") != "tradingview":
+                new = max(pos["stop"], h - pos["d"]) if pos["side"] == 1 else min(pos["stop"], l + pos["d"])
+                if new != pos["stop"]:
+                    pos["stop"] = new
+                    self._sync_stop(inst, pos)
+                self.s.set_position(inst["id"], pos)
+            else:
+                self.s.set_position(inst["id"], pos)
+        side_arr, dist_arr = STRATEGIES[inst["strategy"]]["fn"](hist, inst["params"])
+        sig, d = side_arr[-1], dist_arr[-1]
+        st["signal"] = sig
+        if not sig or not d:
+            return
+        pos = self.s.positions().get(inst["id"])
+        if pos and pos["side"] != sig and inst["params"].get("reverse"):
+            self._close(inst, pos, c, "reverse")
+            pos = None
+        if pos is None:
+            if sig == -1 and inst["market"] == "crypto":
+                return
+            ok, msg = self.open(inst, sig, c, d, source="engine", hist=hist)
+            self.s.event("trade" if ok else "skip", "%s %s: %s" % (inst["symbol"], "LONG" if sig == 1 else "SHORT", msg))
+
+    # ------------------------------------------------------------------ orders
+    def open(self, inst, *a, **k):
+        with self.lock:
+            return self._open(inst, *a, **k)
+
+    def _open(self, inst, side, ref_price, d, source="engine", tp=None, hist=None, stop=None):
+        """Risk-checked entry. Returns (ok, message)."""
+        cfg = self.s.cfg
+        r = cfg["risk"]
+        if self.halted():
+            return False, "trading halted (reset to resume)"
+        poss = self.s.positions()
+        if inst["id"] in poss:
+            return False, "already in position"
+        if len(poss) >= r["max_positions"]:
+            return False, "max positions reached"
+        if self.s.get("daily_block"):
+            return False, "daily loss limit hit"
+        eq = self.equity()
+        mc = MARKET_COSTS[inst["market"]]
+        fee = mc["fee"] + mc["slip"]
+        px = ref_price * (1 + fee * side)
+        if stop is not None:
+            d = abs(px - stop)
+        if d <= 0:
+            return False, "bad stop distance"
+        qty = min(eq * r["per_trade_pct"] / 100 / d, eq * min(r["max_leverage_per_pos"], mc["max_lev"]) / px)
+        gross = sum(p["qty"] * p.get("mark", p["entry"]) for p in poss.values())
+        room = eq * r["max_total_leverage"] - gross
+        qty = min(qty, room / px)
+        if qty <= 0:
+            return False, "no room under the leverage / exposure limits"
+        lot = self._lot(inst)
+        if lot:
+            step, mn = lot
+            q = math.floor(qty / step + 1e-9) * step
+            if q < mn:
+                need = mn * d / (r["per_trade_pct"] / 100)
+                return False, "too small for this account: exchange minimum order is %g and this setup needs ~$%s of equity at %g%% risk" % (
+                    mn, format(int(need), ","), r["per_trade_pct"])
+            qty = round(q, 8)
+        if qty * px < 5:
+            return False, "below the $5 minimum order value"
+        ai_note, ai_p = "", None
+        if source == "engine" and hist and cfg["ai"]["mode"] in ("veto", "advise"):
+            r = analyst.assess(self.s, inst, side, hist, self._btc(inst), poss, eq, self.fetch)
+            if not r["take"]:
+                return False, "AI veto: " + r["note"]
+            ai_note, ai_p = (" | " + r["note"]) if r["note"] else "", r["p"]
+        stop_px = px - side * d
+        if self.live():
+            if inst["market"] != "futures" or not self.broker():
+                return False, "exchange mode needs API keys in Settings and a futures instrument (forex: paper mode only)"
+            b = self.broker()
+            qty = b.round_qty(inst["symbol"], qty)
+            if qty <= 0:
+                return False, "below exchange min size"
+            try:
+                b.set_leverage(inst["symbol"], max(1, int(min(r["max_leverage_per_pos"], mc["max_lev"]))))
+                px = b.open(inst["symbol"], side, qty, stop_px) or px
+            except Exception as e:
+                return False, "broker error: " + str(e)[:100]
+        pos = dict(inst=inst["id"], symbol=inst["symbol"], side=side, qty=qty, entry=px, stop=stop_px, tp=tp, d=d,
+                   t_open=now_ms(), fee_in=px * qty * fee, fund=0.0, source=source, mark=ref_price, mode=cfg["mode"], ai_p=ai_p)
+        self.s.put("cash", self.cash() - pos["fee_in"])
+        self.s.set_position(inst["id"], pos)
+        return True, "opened %.5g @ %.6g stop %.6g (risk $%.2f)%s" % (qty, px, stop_px, qty * d, ai_note)
+
+    def _close(self, inst, *a, **k):
+        with self.lock:
+            return self._close_locked(inst, *a, **k)
+
+    def _close_locked(self, inst, pos, ref_price, reason, exchange_side=False):
+        mc = MARKET_COSTS[inst["market"]]
+        fee = mc["fee"] + mc["slip"]
+        px = ref_price * (1 - fee * pos["side"])
+        if self.live() and not exchange_side and self.broker():
+            try:
+                px = self.broker().close(inst["symbol"], pos["side"], pos["qty"]) or px
+            except Exception as e:
+                self.s.event("error", "close failed %s: %s" % (inst["symbol"], str(e)[:100]))
+        gross = pos["side"] * (px - pos["entry"]) * pos["qty"]
+        fees = pos.get("fee_in", 0) + abs(ref_price - px) * pos["qty"]
+        pnl = gross - pos.get("fee_in", 0) - pos.get("fund", 0)
+        self.s.put("cash", self.cash() + gross - pos.get("fund", 0))
+        self.s.add_trade(inst=inst["id"], symbol=inst["symbol"], side=pos["side"], qty=pos["qty"], entry=pos["entry"], exit=px,
+                         pnl=pnl, fees=fees + pos.get("fund", 0), t_open=pos["t_open"], t_close=now_ms(), reason=reason,
+                         source=pos.get("source"), mode=pos.get("mode"), ai_p=pos.get("ai_p"))
+        self.s.set_position(inst["id"], None)
+        self.s.event("close", "%s closed (%s) %+.2f" % (inst["symbol"], reason, pnl))
+
+    def _sync_stop(self, inst, pos):
+        if self.live() and self.broker() and inst["market"] == "futures":
+            try:
+                self.broker().set_stop(inst["symbol"], pos["side"], pos["stop"])
+            except Exception as e:
+                self.s.event("error", "stop update failed %s: %s" % (inst["symbol"], str(e)[:100]))
+
+    def close_by_id(self, inst_id, reason="manual"):
+        pos = self.s.positions().get(inst_id)
+        inst = next((i for i in self.s.cfg["instruments"] if i["id"] == inst_id), None)
+        if not pos or not inst:
+            return False
+        px = (self.status.get(inst_id) or {}).get("price") or pos.get("mark") or pos["entry"]
+        self._close(inst, pos, px, reason)
+        return True
+
+    def flatten_all(self, reason="kill switch"):
+        n = 0
+        for iid in list(self.s.positions()):
+            n += bool(self.close_by_id(iid, reason))
+        return n
+
+    def kill(self):
+        """Emergency: flatten everything, halt entries, stop the engine."""
+        n = self.flatten_all("kill switch")
+        self.s.put("halted", True)
+        self.stop()
+        self.s.event("error", "KILL SWITCH: flattened %d positions, trading halted" % n)
+        return n
+
+    def resume(self):
+        self.s.put("halted", False)
+        self.s.put("daily_block", False)
+        self.s.put("peak", self.equity())
+        self.s.event("info", "Trading resumed")
+
+    # ------------------------------------------------------------------ risk guards
+    def _risk_guards(self):
+        r = self.s.cfg["risk"]
+        eq = self.equity()
+        day = time.strftime("%Y-%m-%d", time.gmtime())
+        d = self.s.get("day") or {}
+        if d.get("d") != day:
+            d = {"d": day, "eq": eq}
+            self.s.put("day", d)
+            self.s.put("daily_block", False)
+        if not self.s.get("daily_block") and (d["eq"] - eq) / d["eq"] * 100 >= r["daily_loss_limit_pct"]:
+            self.s.put("daily_block", True)
+            self.s.event("error", "Daily loss limit hit: new entries blocked until 00:00 UTC")
+        peak = max(self.s.get("peak", eq), eq)
+        self.s.put("peak", peak)
+        if not self.halted() and (peak - eq) / peak * 100 >= r["max_drawdown_halt_pct"]:
+            self.s.event("error", "Max drawdown halt hit (%.1f%%)" % ((peak - eq) / peak * 100))
+            self.kill()
+
+    def _lot(self, inst):
+        """(qty step, min qty) from Bybit's public instrument rules so paper fills obey real lot sizes. None if unknown."""
+        if inst["market"] != "futures":
+            return None
+        c = self.__dict__.setdefault("_lots", {})
+        if inst["symbol"] not in c:
+            try:
+                from .bybit import Bybit
+                f = Bybit("", "", "real")._step(inst["symbol"])
+                c[inst["symbol"]] = (f[0], f[2])
+            except Exception:
+                c[inst["symbol"]] = None
+        return c[inst["symbol"]]
+
+    def set_account(self, amount):
+        """Fresh paper account with a chosen starting balance (wipes paper history). Not allowed in exchange mode."""
+        if self.live():
+            raise ValueError("balance comes from the exchange in Exchange mode")
+        amount = float(amount)
+        if not 10 <= amount <= 10_000_000:
+            raise ValueError("balance must be between $10 and $10,000,000")
+        with self.lock:
+            if abs(amount - self.s.cfg["start_equity"]) < 1e-9 and not self.s.positions() and not self.s.trades(1):
+                return                                  # same balance on an untouched account: nothing to reset
+            was = self.running
+            self.stop()
+            self.s.reset_paper()
+            self.s.save_cfg({"start_equity": amount})
+            self.s.put("cash", amount)
+            self.status.clear()
+            self.s.event("info", "Paper account reset to $%s" % format(amount, ",.2f"))
+        if was:
+            self.start()
+
+    def _btc(self, inst):
+        """BTC 4h candles for the market-regime features (cached 5 min). None for BTC itself or on failure."""
+        if inst["symbol"].startswith("BTC") or inst["market"] != "futures":
+            return None
+        c = getattr(self, "_btc_cache", None)
+        if not c or time.time() - c[0] > 300:
+            try:
+                c = (time.time(), self.fetch("futures", "BTCUSDT", "4h", 400))
+            except Exception:
+                return None
+            self._btc_cache = c
+        return c[1]
+
+    # ------------------------------------------------------------------ TradingView webhook
+    def handle_signal(self, d):
+        """Payload: {secret, action: buy|sell|close, symbol, price?, stop?, tp?}. Returns (http_code, dict)."""
+        import hmac
+        if not hmac.compare_digest(str(d.get("secret", "")), self.s.cfg["webhook_secret"]):
+            return 403, {"error": "bad secret"}
+        sym = str(d.get("symbol", "")).upper().replace(".P", "").replace("BINANCE:", "")
+        act = d.get("action")
+        if act not in ("buy", "sell", "close"):
+            return 400, {"error": "bad action"}
+        inst = next((i for i in self.s.cfg["instruments"] if i["symbol"].replace("=X", "").upper() == sym.replace("=X", "")), None)
+        if not inst:
+            return 404, {"error": "symbol %s not configured" % sym}
+        if act == "close":
+            return 200, {"closed": self.close_by_id(inst["id"], "tradingview")}
+        try:
+            price = float(d.get("price") or (self.status.get(inst["id"]) or {}).get("price") or self.price(inst["market"], inst["symbol"]))
+            stop = float(d["stop"])
+            tp = float(d["tp"]) if d.get("tp") else None
+        except (KeyError, ValueError, TypeError):
+            return 400, {"error": "need stop (and a price)"}
+        side = 1 if act == "buy" else -1
+        if (side == 1 and not stop < price) or (side == -1 and not stop > price):
+            return 400, {"error": "stop on wrong side of price"}
+        ok, msg = self.open(inst, side, price, abs(price - stop), source="tradingview", tp=tp, stop=None)
+        self.s.event("trade" if ok else "skip", "TV %s %s: %s" % (act, inst["symbol"], msg))
+        return 200, {"ok": ok, "msg": msg}
+
+    # ------------------------------------------------------------------ dashboard state
+    def snapshot(self):
+        eq, cash = self.equity(), self.cash()
+        poss = self.s.positions()
+        trades = self.s.trades(1000)
+        wins = [t for t in trades if t["pnl"] > 0]
+        d = self.s.get("day") or {"eq": eq}
+        peak = self.s.get("peak", eq)
+        start = self.s.cfg["start_equity"]
+        return dict(
+            running=self.running, halted=self.halted(), daily_block=bool(self.s.get("daily_block")), mode=self.s.cfg["mode"],
+            equity=eq, cash=cash, start_equity=start, total_return_pct=(eq / start - 1) * 100,
+            day_pnl=eq - d["eq"], day_pnl_pct=(eq / d["eq"] - 1) * 100 if d["eq"] else 0, drawdown_pct=(peak - eq) / peak * 100 if peak else 0,
+            open_risk=sum(abs(p["mark"] - p["stop"]) * p["qty"] if p.get("mark") else p["d"] * p["qty"] for p in poss.values()),
+            trades=len(trades), win_rate=len(wins) / len(trades) * 100 if trades else 0,
+            profit_factor=(sum(t["pnl"] for t in wins) / -sum(t["pnl"] for t in trades if t["pnl"] <= 0)) if any(t["pnl"] <= 0 for t in trades) and sum(t["pnl"] for t in trades if t["pnl"] <= 0) < 0 else None,
+            positions=[dict(p, id=k, upnl=self.upnl(p), risk_now=abs(p.get("mark", p["entry"]) - p["stop"]) * p["qty"]) for k, p in poss.items()],
+            status={k: {a: b for a, b in v.items() if a != "spark"} for k, v in self.status.items()}, last_cycle=self.last_cycle, now=now_ms())

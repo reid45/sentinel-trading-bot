@@ -1,0 +1,53 @@
+{
+ "tested": "2026-10-10",
+ "model": "deepseek (flash, thinking off)",
+ "signals": 6804,
+ "tokens_in": 1958804,
+ "tokens_out": 134929,
+ "setup": "10 crypto perps, 5y of 4h bars, 0.5% risk/trade, Donchian-40. Every historical signal rated by the model (no dates in prompt). OOS = last 40%.",
+ "rows": [
+  {
+   "label": "No AI",
+   "trades": 2111,
+   "is": 0.44,
+   "oos": 0.56,
+   "oos_ret": 19.5
+  },
+  {
+   "label": "Veto below 35%",
+   "trades": 2072,
+   "is": 0.37,
+   "oos": 0.51,
+   "oos_ret": 17.9
+  },
+  {
+   "label": "Veto below 40%",
+   "trades": 1618,
+   "is": 0.1,
+   "oos": 0.55,
+   "oos_ret": 19.6
+  },
+  {
+   "label": "Veto below 50%",
+   "trades": 1048,
+   "is": -0.07,
+   "oos": 0.38,
+   "oos_ret": 11.0
+  },
+  {
+   "label": "Veto below 60%",
+   "trades": 607,
+   "is": -0.49,
+   "oos": 0.27,
+   "oos_ret": 6.0
+  },
+  {
+   "label": "Size by confidence (0.5x / 1x / 1.5x)",
+   "trades": 2111,
+   "is": 0.31,
+   "oos": 0.54,
+   "oos_ret": 16.9
+  }
+ ],
+ "verdict": "No version of the AI filter beat taking every signal. Vetoing removes winners as often as losers. AI runs in Advise mode: it rates and logs, never blocks."
+}
