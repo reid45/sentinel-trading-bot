@@ -234,6 +234,10 @@ class MockLLM:
         class Hd(BaseHTTPRequestHandler):
             def log_message(s, *a): pass
 
+            def do_GET(s):
+                b = json.dumps({"data": [{"id": "models/gem-a"}, {"id": "gem-b"}, {"id": "text-embedding-3"}]}).encode()
+                s.send_response(200); s.send_header("Content-Length", str(len(b))); s.end_headers(); s.wfile.write(b)
+
             def do_POST(s):
                 outer.reqs.append(json.loads(s.rfile.read(int(s.headers["Content-Length"]))))
                 r = outer.script.pop(0) if outer.script else outer.default
@@ -331,7 +335,7 @@ class Analyst(unittest.TestCase):
         self.assertEqual(r["source"], "error")
 
     def test_no_key_and_off_cost_nothing(self):
-        self.assertEqual(self.run_one(self.store(api_key=""))["source"], "nokey")
+        self.assertEqual(self.run_one(self.store(provider="deepseek", api_key=""))["source"], "nokey")
         self.assertEqual(self.run_one(self.store(mode="off"))["note"], "AI off")
         self.assertEqual(len(self.llm.reqs), 0)
 
@@ -353,6 +357,219 @@ class Analyst(unittest.TestCase):
         lo = next(r for r in sc["rows"] if r["label"].startswith("Rated low"))
         self.assertGreater(hi["avg"], 0)
         self.assertLess(lo["avg"], 0)
+
+
+class Providers(unittest.TestCase):
+    def test_registry_is_sane(self):
+        from tradebot import llm
+        self.assertGreaterEqual(len(llm.PROVIDERS), 12)
+        for k, v in llm.PROVIDERS.items():
+            self.assertIn(v["group"], llm.GROUPS, k)
+            if k not in ("custom", "claude_cli"):
+                self.assertTrue(v["base_url"].startswith("http"), k)
+                self.assertTrue(v["model"], k)
+        self.assertFalse(llm.PROVIDERS["ollama"]["needs_key"])
+
+    def test_body_quirks(self):
+        from tradebot import llm
+        msgs = [{"role": "user", "content": "x"}]
+        ds = llm.build_body({"provider": "deepseek", "base_url": "https://api.deepseek.com", "model": "deepseek-chat"}, msgs, tools=[{"a": 1}])
+        self.assertEqual((ds["model"], ds["thinking"], ds["max_tokens"], ds["temperature"], "tools" in ds), ("deepseek-flash", {"type": "disabled"}, 140, 0, True))  # legacy name upgraded
+        oa = llm.build_body({"provider": "openai", "base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini"}, msgs)
+        self.assertIn("max_completion_tokens", oa); self.assertNotIn("max_tokens", oa); self.assertNotIn("temperature", oa); self.assertNotIn("thinking", oa)
+        ol = llm.build_body({"provider": "ollama", "base_url": "http://localhost:11434/v1", "model": "llama3.1"}, msgs, tools=[{"a": 1}])
+        self.assertNotIn("tools", ol)                                       # small local models: no tool calling by default
+        self.assertTrue(llm.configured({"provider": "ollama", "base_url": "http://localhost:11434/v1"}))        # no key needed
+        self.assertFalse(llm.configured({"provider": "deepseek", "base_url": "https://api.deepseek.com", "api_key": ""}))
+
+    def test_friendly_errors_and_models(self):
+        import urllib.error, io
+        from tradebot import llm
+        e = urllib.error.HTTPError("u", 401, "x", {}, io.BytesIO(b'{"error":{"message":"bad key"}}'))
+        msg = llm.friendly(e)
+        self.assertIn("rejected the key", msg); self.assertIn("bad key", msg)
+        self.assertIn("out of credit", llm.friendly(urllib.error.HTTPError("u", 402, "x", {}, io.BytesIO(b"{}"))))
+        self.assertIn("Ollama", llm.friendly(urllib.error.URLError("[Errno 111] Connection refused localhost")))
+        m = MockLLM()
+        r = llm.list_models({"provider": "custom", "base_url": m.url, "api_key": "k"})
+        self.assertEqual(r["models"], ["gem-a", "gem-b"]); self.assertTrue(r["live"])        # prefix stripped, embeddings filtered
+        r2 = llm.list_models({"provider": "deepseek", "base_url": "http://127.0.0.1:9", "api_key": "k"})
+        self.assertFalse(r2["live"]); self.assertEqual(r2["models"], llm.PROVIDERS["deepseek"]["models"])   # offline -> built-in suggestions
+
+    def test_ask_uses_provider_and_explains_failures(self):
+        from tradebot import llm
+        m = MockLLM()
+        text, ti, to = llm.ask({"provider": "custom", "base_url": m.url, "api_key": "k", "model": "x"}, "hi")
+        self.assertIn('"p"', text)
+        with self.assertRaises(RuntimeError) as cm:
+            llm.ask({"provider": "deepseek", "base_url": "https://api.deepseek.com", "api_key": ""}, "hi")
+        self.assertIn("API key", str(cm.exception))
+
+
+def bars15(n=260, breakout=True, seed=5):
+    """15-minute bars: quiet range then (optionally) a volume-backed breakout candle."""
+    import random
+    r, out, t, p = random.Random(seed), [], 1_700_000_000_000, 100.0
+    for i in range(n):
+        o = p
+        p = 100 + r.uniform(-.25, .25)
+        out.append((t + i * 900000, o, max(o, p) + .05, min(o, p) - .05, p, 10.0))
+    if breakout:
+        o = out[-1][4]
+        out.append((t + n * 900000, o, 101.7, o - .02, 101.5, 40.0))
+    return out
+
+
+from tradebot import daytrader
+
+
+class DayTrading(unittest.TestCase):
+    DEC = '{"action":"long","conf":80,"stop_atr":1.2,"target_atr":2.5,"why":"clean breakout on volume"}'
+
+    def setUp(self):
+        from tradebot import analyst, daytrader
+        analyst.reset_runtime(); daytrader._memo.clear()
+        analyst.derivs = lambda sym: dict(funding=0.01, funding_avg8=0.008, funding_max8=0.02, oi_24h=3.1, ls=1.8, basis=0.02)
+        self.llm = MockLLM()
+        self.set_reply(self.DEC)
+        self.hist = bars15()
+        inst = dict(DEFAULTS["instruments"][0])
+        self.s = mk_store(ai={"mode": "advise", "provider": "custom", "base_url": self.llm.url, "api_key": "k", "model": "deepseek-flash"},
+                          day={"enabled": True, "tf": "15m", "markets": 3, "min_conf": 60, "max_hold_bars": 4}, instruments=[inst])
+        self.e = Engine(self.s, fetcher=lambda m, sym, tf, n: self.hist, pricer=lambda m, sym: self.hist[-1][4])
+        self.e._lots = {"BTCUSDT": (0.001, 0.001)}
+        self.inst = self.s.cfg["instruments"][0]
+        self.did = "day:" + self.inst["id"]
+
+    def set_reply(self, text, usage=None):
+        self.llm.default = {"choices": [{"message": {"role": "assistant", "content": text}}], "usage": usage or {"prompt_cache_hit_tokens": 300, "prompt_cache_miss_tokens": 150, "completion_tokens": 30}}
+
+    def kinds(self):
+        return [t["kind"] for t in reversed(self.s.thoughts(50))]
+
+    def test_scanner_only_flags_real_setups(self):
+        from tradebot import daytrader
+        self.assertTrue(daytrader.candidates(bars15(breakout=True)))
+        self.assertEqual(daytrader.candidates(bars15(breakout=False)), [])                # quiet market: no AI call at all
+
+    def test_candidate_to_trade_with_visible_reasoning(self):
+        self.e._day_one(self.inst, self.s.cfg["day"])
+        pos = self.s.positions().get(self.did)
+        self.assertIsNotNone(pos)
+        self.assertEqual((pos["side"], pos["source"]), (1, "day"))
+        self.assertGreater(pos["tp"], pos["entry"]); self.assertLess(pos["stop"], pos["entry"])
+        self.assertLessEqual(pos["qty"] * pos["d"], 1000 * 0.005 * 1.001 * 10)           # risk rules still apply
+        self.assertEqual(self.kinds(), ["candidate", "decision", "open"])               # the user can read every step
+        self.assertIn("clean breakout", self.s.thoughts(5)[1]["text"])
+        self.assertEqual(len(self.llm.reqs), 1)
+        self.e._day_one(self.inst, self.s.cfg["day"])                                      # same candle again: no second AI call
+        self.assertEqual(len(self.llm.reqs), 1)
+
+    def test_flat_low_confidence_and_no_ai_mean_no_trade(self):
+        self.set_reply('{"action":"flat","conf":30,"stop_atr":1,"target_atr":2,"why":"chop"}')
+        self.e._day_one(self.inst, self.s.cfg["day"])
+        self.assertEqual(self.s.positions(), {})
+        self.s.put("day_ts:" + self.did, None)
+        from tradebot import daytrader; daytrader._memo.clear()
+        self.set_reply('{"action":"long","conf":40,"stop_atr":1,"target_atr":2,"why":"meh"}')
+        self.e._day_one(self.inst, self.s.cfg["day"])
+        self.assertEqual(self.s.positions(), {})                                           # below min_conf
+        daytrader._memo.clear()
+        s2 = mk_store(day={"enabled": True, "tf": "15m", "markets": 3, "min_conf": 60, "max_hold_bars": 4}, instruments=[dict(DEFAULTS["instruments"][0])])
+        e2 = Engine(s2, fetcher=lambda *a: self.hist, pricer=lambda *a: 101.5)
+        e2._day_one(s2.cfg["instruments"][0], s2.cfg["day"])
+        self.assertEqual(s2.positions(), {})
+        self.assertIn("not connected", s2.thoughts(3)[0]["text"])                          # explains why it did nothing
+
+    def test_reward_risk_gate(self):
+        self.set_reply('{"action":"long","conf":90,"stop_atr":2,"target_atr":2.2,"why":"x"}')
+        self.e._day_one(self.inst, self.s.cfg["day"])
+        self.assertEqual(self.s.positions(), {})                                           # target must be >= 1.2x the stop distance
+
+    def test_management_live_stop_target_and_time_exit(self):
+        self.e._day_one(self.inst, self.s.cfg["day"])
+        pos = self.s.positions()[self.did]
+        self.e.price = lambda m, sym: pos["stop"] - 0.01
+        self.e._day_price_check(self.did, dict(pos))
+        self.assertEqual(self.s.trades(1)[0]["reason"], "stop")                            # stop fires on live price, between candles
+        self.assertEqual(self.s.positions(), {})
+        self.e.price = lambda m, sym: 101.5
+        self.s.put("day_ts:" + self.did, None); from tradebot import daytrader; daytrader._memo.clear()
+        self.e._day_one(self.inst, self.s.cfg["day"])
+        pos = self.s.positions()[self.did]
+        t0 = self.hist[-1][0]
+        pos["t_open"] = t0; self.s.set_position(self.did, pos)                           # bar-time based hold counter
+        self.hist = self.hist + [(t0 + 4 * 900000, 101.5, 101.55, 101.45, 101.5, 10.0)]  # 4 bars later (max_hold_bars = 4)
+        self.e._day_one(self.inst, self.s.cfg["day"])
+        self.assertEqual(self.s.trades(1)[0]["reason"], "time")                            # max-hold bars exit
+
+    def test_short_not_allowed_on_stocks(self):
+        st = dict(DEFAULTS["instruments"][-1]); st["enabled"] = True
+        self.set_reply('{"action":"short","conf":90,"stop_atr":1,"target_atr":2.5,"why":"x"}')
+        s = mk_store(ai=self.s.cfg["ai"], day=self.s.cfg["day"], instruments=[st])
+        e = Engine(s, fetcher=lambda *a: self.hist, pricer=lambda *a: 99.0)
+        e._day_one(s.cfg["instruments"][0], s.cfg["day"])
+        self.assertEqual(s.positions(), {})
+
+
+class Chat(unittest.TestCase):
+    def setUp(self):
+        from tradebot import analyst
+        analyst.reset_runtime()
+        self.llm = MockLLM()
+        self.s = mk_store(ai={"mode": "advise", "provider": "custom", "base_url": self.llm.url, "api_key": "k", "model": "m"})
+        self.e = Engine(self.s, pricer=lambda m, sym: 100.0)
+
+    def test_tool_use_steps_and_answer(self):
+        from tradebot import chat
+        tc = {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "account", "arguments": "{}"}}]}}], "usage": {"prompt_cache_miss_tokens": 400, "completion_tokens": 10}}
+        self.llm.script = [tc, {"choices": [{"message": {"content": "You're flat at $10,000."}}], "usage": {"prompt_cache_hit_tokens": 300, "prompt_cache_miss_tokens": 50, "completion_tokens": 12}}]
+        r = chat.ask(self.s, self.e, [{"role": "user", "content": "how am I doing?"}])
+        self.assertEqual(r["answer"], "You're flat at $10,000.")
+        self.assertEqual([x["tool"] for x in r["steps"]], ["account"]); self.assertIn("equity", r["steps"][0]["result"])
+        self.assertGreater(r["usd"], 0)
+        self.assertEqual(self.llm.reqs[0]["messages"][0]["role"], "system")               # static prefix first (cache-friendly)
+        self.assertNotIn("place_trade", json.dumps(self.llm.reqs[0]["tools"]))              # chat is read-only: no trading tool exists
+
+    def test_no_key_and_budget(self):
+        from tradebot import chat
+        s = mk_store(ai={"provider": "deepseek", "api_key": ""})
+        self.assertEqual(chat.ask(s, Engine(s), [{"role": "user", "content": "hi"}])["error"], "nokey")
+        s2 = mk_store(ai={"mode": "advise", "provider": "custom", "base_url": self.llm.url, "api_key": "k", "budget": {"max_calls_day": 0, "max_usd_day": 1, "max_usd_total": 1}})
+        self.assertEqual(chat.ask(s2, Engine(s2), [{"role": "user", "content": "hi"}])["error"], "budget")
+        self.assertEqual(len(self.llm.reqs), 0)
+
+
+class Watchlist(unittest.TestCase):
+    def test_catalog_search_and_defaults(self):
+        from tradebot import catalog
+        self.assertTrue(any(r["symbol"] == "AAPL" for r in catalog.search("apple", online=False)))
+        self.assertGreaterEqual(len(catalog.STATIC), 150)
+        self.assertEqual({r["cat"] for r in catalog.STATIC}, {"crypto", "stock", "etf", "forex", "commodity", "index"})
+        st = catalog.make_instrument(catalog.lookup("stock", "AAPL"), "1h", False)
+        self.assertEqual((st["market"], st["strategy"], st["enabled"], st["id"]), ("stock", "donchian", False, "stock:AAPL:1h"))
+        self.assertEqual(st["params"]["reverse"], 0)                                          # stocks: long-only
+
+    def test_featured_stocks_listed_watch_only_and_migration(self):
+        feat = [i for i in DEFAULTS["instruments"] if i["market"] == "stock"]
+        self.assertGreaterEqual(len(feat), 6); self.assertTrue(all(not i["enabled"] for i in feat))
+        s = mk_store(instruments=[{"id": "futures:BTCUSDT:4h", "market": "futures", "symbol": "BTCUSDT", "tf": "4h", "strategy": "donchian", "params": {}, "enabled": True}])
+        s.cfg["ui"].pop("seeded_stocks", None); s.migrate_watchlist()
+        ins = s.cfg["instruments"]
+        self.assertIn("name", ins[0]); self.assertFalse(ins[0]["fav"])
+        self.assertTrue(any(i["symbol"] == "AAPL" and not i["enabled"] for i in ins))
+
+    def test_watch_only_never_trades_and_stock_is_long_only(self):
+        st = dict(DEFAULTS["instruments"][-1])                                                # a featured stock, watch-only
+        s = mk_store(instruments=[st])
+        e = Engine(s, pricer=lambda m, sym: 100.0)
+        hist = synth(400)
+        e._on_bar(st, hist, {"signal": 0})
+        self.assertEqual(s.positions(), {})
+
+    def test_stock_costs_and_api(self):
+        self.assertIn("stock", B.MARKET_COSTS)
+        self.assertEqual(B.MARKET_COSTS["stock"]["fee"], 0.0)
 
 
 class Misc(unittest.TestCase):
@@ -450,6 +667,39 @@ class ServerApi(unittest.TestCase):
         self.assertRegex(html, r'src="app\.js\?v=\d+"')
         self.assertRegex(html, r'href="style\.css\?v=\d+"')
         self.assertIn('src="vendor/lwc.js"', html)                        # pinned third-party files stay unstamped (cached a week)
+
+    def test_watchlist_and_catalog_api(self):
+        c, b = self.call("/api/catalog?q=nvidia&cat=stock")
+        rows = json.loads(b)["rows"]
+        self.assertEqual(c, 200); self.assertTrue(any(r["symbol"] == "NVDA" for r in rows))
+        n0 = len(json.loads(self.call("/api/state")[1])["cfg"]["instruments"])
+        item = {"market": "stock", "symbol": "COST", "name": "Costco", "cat": "stock"}
+        self.assertTrue(json.loads(self.call("/api/watchlist", {"action": "add", "items": [item], "trade": True})[1])["ok"])
+        ins = json.loads(self.call("/api/state")[1])["cfg"]["instruments"]
+        cost = next(i for i in ins if i["symbol"] == "COST")
+        self.assertTrue(cost["enabled"]); self.assertEqual(len(ins), n0 + 0 if any(i["symbol"] == "COST" for i in ins[:n0]) else n0 + 1)
+        self.call("/api/watchlist", {"action": "fav", "id": cost["id"], "value": True})
+        self.call("/api/watchlist", {"action": "trade", "id": cost["id"], "value": False})
+        cost = next(i for i in json.loads(self.call("/api/state")[1])["cfg"]["instruments"] if i["symbol"] == "COST")
+        self.assertTrue(cost["fav"]); self.assertFalse(cost["enabled"])
+        self.call("/api/watchlist", {"action": "remove", "id": cost["id"]})
+        self.assertFalse(any(i["symbol"] == "COST" for i in json.loads(self.call("/api/state")[1])["cfg"]["instruments"]))
+        self.assertEqual(self.call("/api/watchlist", {"action": "fav", "id": "nope"})[0], 404)
+        self.assertEqual(self.call("/api/thoughts")[0], 200)
+        self.call("/api/config", {"ai": {"provider": "custom", "base_url": "http://127.0.0.1:9"}})                       # dead local port: never a real AI call
+        self.assertIn(json.loads(self.call("/api/chat", {"messages": [{"role": "user", "content": "hi"}]})[1])["error"], ("api", "nokey"))
+
+    def test_speed_switch_rewrites_ids_and_scales_lookbacks(self):
+        self.assertEqual(self.call("/api/speed", {"tf": "7m"})[0], 400)
+        before = json.loads(self.call("/api/state")[1])["cfg"]["instruments"]
+        n0 = next(i for i in before if i["strategy"] == "donchian")["params"]["n"]
+        self.assertEqual(self.call("/api/speed", {"tf": "15m", "flatten": True})[0], 200)
+        after = json.loads(self.call("/api/state")[1])["cfg"]["instruments"]
+        self.assertTrue(all(i["tf"] == "15m" and i["id"].endswith(":15m") for i in after))
+        self.assertGreater(next(i for i in after if i["strategy"] == "donchian")["params"]["n"], n0)      # longer lookback on faster candles
+        self.assertEqual(self.call("/api/speed", {"tf": "4h", "flatten": True})[0], 200)
+        back = json.loads(self.call("/api/state")[1])["cfg"]["instruments"]
+        self.assertEqual(next(i for i in back if i["strategy"] == "donchian")["params"]["n"], n0)          # round trip restores the original
 
     def test_backtest_job(self):
         c, b = self.call("/api/backtest", {"kind": "single", "market": "futures", "symbol": "BTCUSDT", "tf": "4h", "strategy": "donchian",

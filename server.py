@@ -4,7 +4,7 @@ webhooks does not expose the dashboard."""
 import json, mimetypes, os, sys, threading, time, traceback, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from tradebot import data, backtest as B, ai, analyst, indicators as I
+from tradebot import data, backtest as B, ai, analyst, llm, catalog, chat, indicators as I
 from tradebot.engine import Engine
 from tradebot.store import Store
 from tradebot.strategies import STRATEGIES
@@ -14,6 +14,7 @@ mimetypes.add_type("text/javascript", ".js")
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 store = Store()
 store.save_cfg()
+store.migrate_watchlist()
 engine = Engine(store)
 jobs = {}
 _candle_cache = {}
@@ -94,22 +95,25 @@ def run_job(kind, req):
         traceback.print_exc()
 
 
-def candles_view(inst_id, n=300):
+def candles_view(inst_id, n=300, tf=None):
     inst = next((i for i in store.cfg["instruments"] if i["id"] == inst_id), None)
     if not inst:
         return {"error": "unknown instrument"}
-    key = (inst_id, int(time.time() // 10))
+    tf = tf if tf in data.TF_MS else inst["tf"]
+    key = (inst_id, tf, int(time.time() // 10))
     if key not in _candle_cache:
         _candle_cache.clear()
-        _candle_cache[key] = data.fetch_recent(inst["market"], inst["symbol"], inst["tf"], n + 250, forming=True)
+        _candle_cache[key] = data.fetch_recent(inst["market"], inst["symbol"], tf, n + 250, forming=True)
     allb = _candle_cache[key]
-    tfms = data.TF_MS[inst["tf"]]
+    tfms = data.TF_MS[tf]
     forming = allb[-1][0] + tfms > int(time.time() * 1000)
     hist = allb[:-1] if forming else allb                      # indicators only ever use CLOSED bars
     cl, h, l = [x[4] for x in hist], [x[2] for x in hist], [x[3] for x in hist]
     p = inst["params"]
     overlays = {}
-    if inst["strategy"] == "donchian":
+    if tf != inst["tf"]:
+        pass                                                   # strategy levels only make sense on the timeframe the bot trades
+    elif inst["strategy"] == "donchian":
         overlays["upper"], overlays["lower"] = I.highest(h, p["n"]), I.lowest(l, p["n"])
         if p.get("trend"):
             overlays["trend"] = I.ema(cl, p["trend"])
@@ -118,10 +122,87 @@ def candles_view(inst_id, n=300):
     else:
         overlays["trend"] = I.ema(cl, p["trend"])
     off = len(hist) - n
-    trades = [t for t in store.trades(500) if t["inst"] == inst_id]
+    trades = [t for t in store.trades(500) if t["inst"] in (inst_id, "day:" + inst_id)]
     return dict(inst=inst, candles=allb[-(n + (1 if forming else 0)):], forming=forming, overlays={k: v[max(0, off):] for k, v in overlays.items()},
                 trades=[dict(t_open=t["t_open"], t_close=t["t_close"], side=t["side"], entry=t["entry"], exit=t["exit"], pnl=t["pnl"]) for t in trades],
-                position=store.positions().get(inst_id))
+                position=store.positions().get(inst_id) or store.positions().get("day:" + inst_id))
+
+
+MAX_MARKETS = 80
+SPEED_TFS = ("5m", "15m", "1h", "4h")
+
+
+def speed_action(b):
+    """Switch every swing-bot market to a new timeframe (ids, lookbacks and state follow). Flattens open swing trades first."""
+    tf = b.get("tf")
+    if tf not in SPEED_TFS:
+        return 400, {"error": "timeframe must be one of %s" % ", ".join(SPEED_TFS)}
+    ins = store.cfg["instruments"]
+    swing_open = [pid for pid in store.positions() if not pid.startswith("day:")]
+    if swing_open and not b.get("flatten"):
+        return 409, {"error": "close open swing trades first (or confirm flatten)"}
+    for pid in swing_open:
+        engine.close_by_id(pid, "timeframe change")
+    mins = {"5m": 5, "15m": 15, "1h": 60, "4h": 240}
+    f = min(6, 240 // mins[tf])                    # longer lookbacks on faster candles so levels still mean something
+    for i in ins:
+        old = data.TF_MS[i["tf"]]
+        engine.status.pop(i["id"], None)
+        base = 240 // max(1, int(old / 60000)) if old < data.TF_MS["4h"] else 1
+        p = i["params"]
+        for k in ("n", "fast", "slow", "trend"):
+            if p.get(k):
+                p[k] = max(2, int(round(p[k] / max(1, min(6, base)) * f)))
+        i["tf"] = tf
+        i["id"] = "%s:%s:%s" % (i["market"], i["symbol"], tf)
+    store.save_cfg()
+    return 200, {"ok": True}
+
+
+def watchlist_action(b):
+    ins, act = store.cfg["instruments"], b.get("action")
+    tf = ins[0]["tf"] if ins else "4h"
+    if act == "add":
+        added = 0
+        for it in b.get("items", []):
+            if len(ins) >= MAX_MARKETS:
+                return 400, {"error": "Watchlist is full (%d markets). Remove some first." % MAX_MARKETS}
+            if it.get("market") not in ("futures", "forex", "stock") or not it.get("symbol"):
+                continue
+            if any(i["market"] == it["market"] and i["symbol"] == it["symbol"] for i in ins):
+                continue
+            ins.append(catalog.make_instrument(it, tf, bool(b.get("trade", True)), bool(it.get("fav"))))
+            added += 1
+        store.save_cfg()
+        return 200, {"ok": True, "added": added}
+    inst = next((i for i in ins if i["id"] == b.get("id")), None)
+    if not inst:
+        return 404, {"error": "unknown market"}
+    if act == "fav":
+        inst["fav"] = bool(b.get("value"))
+    elif act == "trade":
+        inst["enabled"] = bool(b.get("value"))
+    elif act == "remove":
+        engine.close_by_id(inst["id"], "removed")
+        ins.remove(inst)
+        engine.status.pop(inst["id"], None)
+    else:
+        return 400, {"error": "bad action"}
+    store.save_cfg()
+    return 200, {"ok": True}
+
+
+def _ai_cfg(b):
+    """Saved AI settings overlaid with whatever the form currently holds (so 'Test' works before 'Save'). A blank key means 'use the saved one'."""
+    cfg = dict(store.cfg["ai"])
+    for k in ("provider", "base_url", "model", "api_key"):
+        if b.get(k):
+            cfg[k] = b[k]
+    if b.get("provider") and b["provider"] != store.cfg["ai"].get("provider") and not b.get("base_url"):
+        cfg["base_url"] = llm.PROVIDERS.get(b["provider"], {}).get("base_url", cfg.get("base_url", ""))
+    if b.get("provider") and b["provider"] != store.cfg["ai"].get("provider") and not b.get("api_key"):
+        cfg["api_key"] = ""
+    return cfg
 
 
 # ---------------------------------------------------------------- HTTP
@@ -156,7 +237,7 @@ class H(BaseHTTPRequestHandler):
             if u.path == "/api/state":
                 return self._send(200, dict(engine=engine.snapshot(), cfg=store.public_cfg(), events=store.events(40),
                                             strategies={k: v["label"] for k, v in STRATEGIES.items()},
-                                            presets={k: list(v) for k, v in ai.PRESETS.items()}, defaults={k: v["grid"] for k, v in STRATEGIES.items()}))
+                                            providers=llm.public_list(), groups=llm.GROUPS, defaults={k: v["grid"] for k, v in STRATEGIES.items()}))
             if u.path == "/api/spark":
                 return self._send(200, {k: {"s": v.get("spark", []), "c": v.get("chg24", 0)} for k, v in engine.status.items()})
             if u.path == "/api/equity":
@@ -164,7 +245,13 @@ class H(BaseHTTPRequestHandler):
             if u.path == "/api/trades":
                 return self._send(200, store.trades(int(q.get("n", 500))))
             if u.path == "/api/candles":
-                return self._send(200, candles_view(q["inst"]))
+                return self._send(200, candles_view(q["inst"], tf=q.get("tf")))
+            if u.path == "/api/thoughts":
+                return self._send(200, store.thoughts(int(q.get("n", 80)), int(q.get("after", 0))))
+            if u.path == "/api/catalog":
+                rows = catalog.search(q.get("q", ""), q.get("cat", "all"), int(q.get("n", 60)))
+                have = {(i["market"], i["symbol"]): i for i in store.cfg["instruments"]}
+                return self._send(200, dict(rows=[dict(r, added=(r["market"], r["symbol"]) in have, fav=bool(have.get((r["market"], r["symbol"]), {}).get("fav"))) for r in rows], cats=catalog.CATS))
             if u.path == "/api/job":
                 j = jobs.get(q.get("id"), {"state": "error", "error": "unknown job"})
                 return self._send(200, j)
@@ -264,6 +351,12 @@ class H(BaseHTTPRequestHandler):
             except (ValueError, KeyError) as e:
                 return 400, {"error": str(e)}
             return 200, {"ok": True}
+        if path == "/api/chat":
+            return 200, chat.ask(store, engine, b.get("messages", []))
+        if path == "/api/speed":
+            return speed_action(b)
+        if path == "/api/watchlist":
+            return watchlist_action(b)
         if path == "/api/reset":
             if b.get("confirm") != "RESET":
                 return 400, {"error": "type RESET"}
@@ -286,14 +379,17 @@ class H(BaseHTTPRequestHandler):
                 return 200, {"ok": True, "equity": br.equity(), "exchange": store.cfg["broker"]["exchange"]}
             except Exception as e:
                 return 200, {"ok": False, "error": str(e)[:200]}
+        if path == "/api/ai/models":
+            cfg = _ai_cfg(b)
+            return 200, llm.list_models(cfg)
         if path == "/api/ai/test":
-            cfg = dict(store.cfg["ai"], **{k: v for k, v in (b or {}).items() if v})
+            cfg = _ai_cfg(b)
             t = time.time()
             try:
                 text, ti, to = ai.ask(cfg, 'Reply exactly {"take":true,"why":"ok"}')
                 return 200, {"ok": True, "reply": text.strip()[:200], "ms": int((time.time() - t) * 1000), "tokens": ti + to}
             except Exception as e:
-                return 200, {"ok": False, "error": str(e)[:200]}
+                return 200, {"ok": False, "error": str(e)[:240]}
         if path == "/api/ai/brief":
             snap = engine.snapshot()
             stats = {k: (round(snap[k], 2) if isinstance(snap[k], float) else snap[k]) for k in

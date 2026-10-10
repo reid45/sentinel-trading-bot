@@ -3,8 +3,8 @@
 Token/cost design (per DeepSeek docs): context caching is automatic on identical prompt PREFIXES, so SYSTEM + TOOLS are static bytes
 and the per-signal dossier goes last. Non-thinking mode, short JSON answer, max 2 tool rounds, hard daily/total budget,
 per-(market,bar,side) memo so a retry never re-bills, circuit breaker on repeated failures. Any failure fails open."""
-import json, time, threading, urllib.request, urllib.error
-from . import context, data
+import json, time, threading
+from . import context, data, llm
 
 SYSTEM = (
     "You are Sentinel's signal analyst for a mechanical 4h trend-following breakout bot on crypto perpetuals. "
@@ -137,9 +137,7 @@ def dossier(store, inst, side, f, poss, equity):
 
 # ------------------------------------------------------------------ the call
 def _post(cfg, body, timeout):
-    req = urllib.request.Request(cfg["base_url"].rstrip("/") + "/chat/completions", method="POST",
-                                 headers={"Content-Type": "application/json", "Authorization": "Bearer " + cfg["api_key"]}, data=json.dumps(body, separators=(",", ":")).encode())
-    return json.loads(urllib.request.urlopen(req, timeout=timeout).read())
+    return llm.post_chat(cfg, body, timeout)
 
 
 def parse(text):
@@ -163,8 +161,8 @@ def assess(store, inst, side, hist, btc, poss, equity, fetch):
         return dict(_memo[key], source="memo")
     if time.time() < _breaker["until"]:
         return dict(out, note="AI paused after errors", source="breaker")
-    if cfg["provider"] != "claude_cli" and not cfg.get("api_key"):
-        return dict(out, note="AI has no key", source="nokey")
+    if cfg["provider"] == "claude_cli" or not llm.configured(cfg):
+        return dict(out, note="AI is not connected", source="nokey")
     ok, why = budget_ok(store)
     if not ok:
         return dict(out, note=why, source="budget")
@@ -173,11 +171,7 @@ def assess(store, inst, side, hist, btc, poss, equity, fetch):
         f = context.features(hist, side, btc=btc)
         doss = dossier(store, inst, side, f, poss, equity)
         msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": doss}]
-        body = dict(model=cfg["model"], messages=msgs, max_tokens=140, temperature=0)
-        if "deepseek" in cfg["base_url"]:
-            body["thinking"] = {"type": "disabled"}
-        if cfg.get("tools", True):
-            body["tools"] = TOOLS
+        body = llm.build_body(cfg, msgs, tools=TOOLS, max_tokens=140)       # provider quirks (token param, temperature, thinking) live in llm.py
         tin = tout = 0
         for rnd in range(int(cfg.get("max_tool_rounds", 2)) + 1):
             if rnd == int(cfg.get("max_tool_rounds", 2)):
@@ -211,8 +205,9 @@ def assess(store, inst, side, hist, btc, poss, equity, fetch):
         _breaker["fails"] += 1
         if _breaker["fails"] >= 3:
             _breaker.update(until=time.time() + 600, fails=0)
-        store.ai_log_add(inst=inst["id"], prompt="", reply="ERROR " + str(e)[:160], take=1, ms=int((time.time() - t0) * 1000))
-        return dict(out, note="AI unavailable (%s) - proceeding" % str(e)[:50], source="error", ms=int((time.time() - t0) * 1000))
+        why = llm.friendly(e)
+        store.ai_log_add(inst=inst["id"], prompt="", reply="ERROR " + why[:160], take=1, ms=int((time.time() - t0) * 1000))
+        return dict(out, note="AI unavailable (%s) - proceeding" % why[:60], source="error", ms=int((time.time() - t0) * 1000))
 
 
 def reset_runtime():

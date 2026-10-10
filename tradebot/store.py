@@ -1,15 +1,13 @@
 """SQLite persistence + JSON config (secrets stay on this machine in data/config.json)."""
 import os, json, sqlite3, threading, time, copy
+from . import catalog
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.environ.get("TRADEBOT_DATA") or os.path.join(ROOT, "data")
 
-PERP_PARAMS = dict(n=40, trend=0, stop=4.0, trail=1, tp=0, reverse=1)
-FX_PARAMS = dict(fast=10, slow=100, adx=15, stop=3.0, trail=1, tp=0, reverse=1)
-
-
-def _inst(market, sym, strat, params, on=True):
-    return dict(id="%s:%s:4h" % (market, sym), market=market, symbol=sym, tf="4h", strategy=strat, params=dict(params), enabled=on)
+def _mk(market, sym, on=True):
+    row = catalog.lookup(market, sym) or dict(market=market, symbol=sym, name=sym, cat="crypto" if market == "futures" else market)
+    return catalog.make_instrument(row, "4h", on)
 
 
 DEFAULTS = {
@@ -18,9 +16,9 @@ DEFAULTS = {
     "poll_seconds": 20,
     "risk": {"per_trade_pct": 0.5, "max_positions": 6, "max_leverage_per_pos": 3.0, "max_total_leverage": 3.0,
              "daily_loss_limit_pct": 3.0, "max_drawdown_halt_pct": 20.0},
-    "instruments": [_inst("futures", s, "donchian", PERP_PARAMS) for s in
-                    ("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "LINKUSDT", "LTCUSDT", "AVAXUSDT")] +
-                   [_inst("forex", s, "emacross", FX_PARAMS) for s in ("EURUSD=X", "GBPUSD=X", "USDJPY=X")],
+    "instruments": [_mk("futures", s) for s in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "LINKUSDT", "LTCUSDT", "AVAXUSDT")] +
+                   [_mk("forex", s) for s in ("EURUSD=X", "GBPUSD=X", "USDJPY=X")] +
+                   [_mk("stock", s, on=False) for s in catalog.FEATURED_STOCKS],        # big companies are listed watch-only; one tap lets the bot trade them
     "ai": {"mode": "advise", "provider": "deepseek", "base_url": "https://api.deepseek.com", "model": "deepseek-flash",
            "api_key": "", "timeout": 12, "min_p": 0, "tools": True, "max_tool_rounds": 2,
            "budget": {"max_calls_day": 120, "max_usd_day": 0.25, "max_usd_total": 3.0}},
@@ -28,6 +26,7 @@ DEFAULTS = {
                "binance_key": "", "binance_secret": "", "binance_testnet": True},
     "webhook_secret": "",
     "ui": {"onboarded": False, "tour_done": False},
+    "day": {"enabled": False, "tf": "15m", "markets": 6, "min_conf": 60, "max_hold_bars": 24},
 }
 
 
@@ -53,6 +52,7 @@ class Store:
             entry REAL, exit REAL, pnl REAL, fees REAL, t_open INTEGER, t_close INTEGER, reason TEXT, source TEXT, mode TEXT);
         CREATE TABLE IF NOT EXISTS equity(t INTEGER PRIMARY KEY, equity REAL, cash REAL);
         CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, t INTEGER, level TEXT, msg TEXT);
+        CREATE TABLE IF NOT EXISTS thoughts(id INTEGER PRIMARY KEY AUTOINCREMENT, t INTEGER, inst TEXT, symbol TEXT, kind TEXT, text TEXT);
         CREATE TABLE IF NOT EXISTS ai_log(id INTEGER PRIMARY KEY AUTOINCREMENT, t INTEGER, inst TEXT, prompt TEXT, reply TEXT,
             take INTEGER, tokens_in INTEGER, tokens_out INTEGER, ms INTEGER);
         """)
@@ -82,6 +82,24 @@ class Store:
             with open(self.cfg_path, "w") as f:
                 json.dump(self.cfg, f, indent=1)
             return self.cfg
+
+    def migrate_watchlist(self):
+        """Older configs: add name/category/favorite fields, and list the featured big companies once (watch-only)."""
+        ins, ch = self.cfg["instruments"], False
+        for i in ins:
+            r = catalog.lookup(i["market"], i["symbol"]) or {}
+            for k, v in (("name", r.get("name") or i["symbol"]), ("cat", r.get("cat") or ("crypto" if i["market"] == "futures" else i["market"])), ("fav", False)):
+                if k not in i:
+                    i[k], ch = v, True
+        if not self.cfg["ui"].get("seeded_stocks"):
+            have = {(i["market"], i["symbol"]) for i in ins}
+            tf = ins[0]["tf"] if ins else "4h"
+            for sym in catalog.FEATURED_STOCKS:
+                if ("stock", sym) not in have:
+                    ins.append(catalog.make_instrument(catalog.lookup("stock", sym), tf, False))
+            self.cfg["ui"]["seeded_stocks"], ch = True, True
+        if ch:
+            self.save_cfg()
 
     def public_cfg(self):
         c = copy.deepcopy(self.cfg)
@@ -145,6 +163,17 @@ class Store:
         with self.lock:
             return [dict(r) for r in self.db.execute("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,))]
 
+    def think(self, inst, kind, text):
+        """One line of the trader's visible reasoning (scan / candidate / decision / skip / open / manage / close)."""
+        with self.lock:
+            self.db.execute("INSERT INTO thoughts(t,inst,symbol,kind,text) VALUES(?,?,?,?,?)", (int(time.time() * 1000), inst.get("id"), inst.get("symbol", ""), kind, text[:400]))
+            self.db.execute("DELETE FROM thoughts WHERE id < (SELECT MAX(id) FROM thoughts) - 800")
+            self.db.commit()
+
+    def thoughts(self, limit=60, after=0):
+        with self.lock:
+            return [dict(r) for r in self.db.execute("SELECT * FROM thoughts WHERE id > ? ORDER BY id DESC LIMIT ?", (after, limit))]
+
     def ai_log_add(self, **r):
         with self.lock:
             self.db.execute("INSERT INTO ai_log(t,inst,prompt,reply,take,tokens_in,tokens_out,ms) VALUES(?,?,?,?,?,?,?,?)",
@@ -170,7 +199,7 @@ class Store:
 
     def reset_paper(self):
         with self.lock:
-            for t in ("positions", "trades", "equity", "events", "ai_log"):
+            for t in ("positions", "trades", "equity", "events", "ai_log", "thoughts"):
                 self.db.execute("DELETE FROM " + t)
             self.db.execute("DELETE FROM kv")
             self.db.commit()

@@ -16,8 +16,9 @@ const tm = t => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2
 const dur = ms => ms <= 0 ? "now" : ms >= 3600000 ? Math.floor(ms / 3600000) + "h " + Math.floor(ms % 3600000 / 60000) + "m" : Math.max(1, Math.floor(ms / 60000)) + "m";
 const NAMES = { BTC: "Bitcoin", ETH: "Ethereum", SOL: "Solana", BNB: "BNB", XRP: "XRP", DOGE: "Dogecoin", ADA: "Cardano", LINK: "Chainlink", LTC: "Litecoin", AVAX: "Avalanche", EURUSD: "Euro / US Dollar", GBPUSD: "Pound / US Dollar", USDJPY: "US Dollar / Yen" };
 const short = i => i.symbol.replace("=X", "").replace("USDT", "");
-const coinHTML = i => { const s = short(i); return ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "LINK", "LTC", "AVAX"].includes(s) ? `<span class="coin"><img src="vendor/coins/${s.toLowerCase()}.svg" alt="" loading="lazy"></span>` : `<span class="coin">${esc(s.slice(0, 3))}</span>`; };
-const insts = () => S.cfg.instruments.filter(i => i.enabled);
+const coinHTML = i => coinFor(i);
+const insts = () => sortedInsts();                                   // everything on the list, favorites first
+const trading = () => S.cfg.instruments.filter(i => i.enabled);   // the ones the bot may trade
 
 /* ---------- dom helpers */
 function icons(root = document) { $$("svg[data-i]", root).forEach(s => { if (s.dataset.done) return; s.setAttribute("viewBox", "0 0 24 24"); s.innerHTML = (window.ICONS || {})[s.dataset.i] || ""; s.dataset.done = 1; }); }
@@ -114,12 +115,13 @@ function ensureChart() {
 async function loadChart(force) {
   const i = S.cfg.instruments.find(x => x.id === sel); if (!i) return;
   ensureChart();
-  const d = await api("/api/candles?inst=" + encodeURIComponent(sel), undefined, true); if (d.error || sel !== i.id) return;
+  const tfNow = chartTf || i.tf, ck = sel + "|" + tfNow;
+  const d = await api("/api/candles?inst=" + encodeURIComponent(sel) + "&tf=" + tfNow, undefined, true); if (d.error || sel !== i.id || (chartTf || i.tf) !== tfNow) return;
   TC.data = d; const cs = d.candles, n = cs.length - (d.forming ? 1 : 0), p = prec(cs[n - 1][4]);
   TC.candle.applyOptions({ priceFormat: { type: "price", precision: p, minMove: Math.pow(10, -p) } });
   TC.candle.setData(cs.map(c => ({ time: T(c[0]), open: c[1], high: c[2], low: c[3], close: c[4] })));
   TC.vol.setData(cs.map(c => ({ time: T(c[0]), value: c[5], color: c[4] >= c[1] ? "rgba(46,211,160,.22)" : "rgba(255,94,122,.22)" })));
-  if (TC.inst !== sel) { Object.values(TC.ov).forEach(s => TC.chart.removeSeries(s)); TC.ov = {}; }
+  if (TC.inst !== ck) { Object.values(TC.ov).forEach(s => TC.chart.removeSeries(s)); TC.ov = {}; }
   const style = { upper: [COL.acc, "Breakout high"], lower: [COL.acc, "Breakout low"], trend: [COL.warn, "Trend (EMA)"], fast: [COL.acc, "Fast EMA"], slow: [COL.acc2, "Slow EMA"] };
   Object.entries(d.overlays).forEach(([k, arr]) => {
     if (!TC.ov[k]) TC.ov[k] = TC.chart.addLineSeries({ color: style[k][0], lineWidth: 1, lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false, lineStyle: k === "upper" || k === "lower" ? 0 : 2 });
@@ -133,9 +135,9 @@ async function loadChart(force) {
   mk.sort((a, b) => a.time - b.time); TC.candle.setMarkers(mk);
   TC.lines.forEach(l => TC.candle.removePriceLine(l)); TC.lines = [];
   if (d.position) [["Entry", d.position.entry, "#a2a9b6"], ["Stop", d.position.stop, COL.down]].forEach(([t, v, c]) => TC.lines.push(TC.candle.createPriceLine({ price: v, color: c, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: t })));
-  TC.last = cs[cs.length - 1].slice(); if (TC.inst !== sel || force) TC.chart.timeScale().fitContent(); TC.chart.timeScale().applyOptions({ rightOffset: 5 });
-  if (TC.inst !== sel) { const w = Math.min(cs.length, 110); TC.chart.timeScale().setVisibleLogicalRange({ from: cs.length - w, to: cs.length + 4 }); }
-  TC.inst = sel; $("#chartBox").style.opacity = 1;
+  TC.last = cs[cs.length - 1].slice(); if (TC.inst !== ck || force) TC.chart.timeScale().fitContent(); TC.chart.timeScale().applyOptions({ rightOffset: 5 });
+  if (TC.inst !== ck) { const w = Math.min(cs.length, 110); TC.chart.timeScale().setVisibleLogicalRange({ from: cs.length - w, to: cs.length + 4 }); }
+  TC.inst = ck; $("#chartBox").style.opacity = 1;
 }
 function liveTick() {
   if (!TC.last || !S || page !== "trade") return; const st = S.engine.status[sel]; if (!st || !st.price) return;
@@ -150,11 +152,12 @@ async function refresh() {
   const e = S.engine, ins = insts();
   if (!sel || !S.cfg.instruments.find(i => i.id === sel)) sel = (ins[0] || {}).id;
   $("#engLed").className = "led " + (e.halted ? "bad" : e.running ? "on" : "warn"); $("#railLed").className = $("#engLed").className;
-  $("#engTxt").textContent = e.halted ? "Halted" : e.running ? "Live · " + ins.length + " markets" : "Paused";
+  $("#engTxt").textContent = e.halted ? "Halted" : e.running ? "Live · " + trading().length + " markets" : "Paused";
   $("#modeChip").textContent = e.mode === "live" ? "Exchange mode" : "Practice mode"; $("#modeChip").style.color = e.mode === "live" ? "var(--down)" : "";
   roll($("#acctTxt"), money(e.equity)); $("#engSeg").set(e.running ? "run" : "pause");
   celebrate(S.events); liveTick();
-  if (page === "trade") renderTrade(); else if (page === "portfolio") renderPortfolio();
+  aiChipUpdate();
+  if (page === "trade") renderTrade(); else if (page === "portfolio") renderPortfolio(); else if (page === "trader") renderTrader();
 }
 function celebrate(evs) {
   const mx = Math.max(0, ...evs.map(v => v.id)); if (lastEv === null) { lastEv = mx; return; }
@@ -169,14 +172,16 @@ function celebrate(evs) {
 function buildTrade() {
   $("#p-trade").innerHTML = `<div class="rise">
    <div class="trade"><div style="--i:0;min-width:0">
-     <div class="sym"><span id="tCoin"></span><div><div class="name" id="tName"></div><div class="sub" id="tSub"></div></div><div class="price" id="tPrice"></div><span class="pill" id="tChg"></span><span class="grow"></span><span class="pill acc pro" id="tStrat"></span></div>
+     <div class="sym"><span id="tCoin"></span><div><div class="name" id="tName"></div><div class="sub" id="tSub"></div></div><div class="price" id="tPrice"></div><span class="pill" id="tChg"></span><span class="grow"></span><span class="pill acc pro" id="tStrat"></span><div class="seg" id="tfSeg" data-tip="Chart timeframe: how much time each candle covers"><div class="thumb"></div>${TFS.map(t => `<button data-v="${t}">${t}</button>`).join("")}</div></div>
      <div class="status" id="tStatus"></div>
      <div class="card" id="chartBox" style="padding:0;opacity:.0;transition:opacity .6s"><div class="legend"><span id="ohlc"></span><span id="legend" style="display:flex;gap:10px"></span></div><div id="chart"></div></div>
-   </div><div style="--i:1"><div class="card"><h3>Markets <span class="sub" id="wlN"></span></h3><div class="wl scroll" id="wl"></div></div></div></div>
+   </div><div style="--i:1"><div class="card"><h3>My markets <span><span class="sub" id="wlN"></span> <button class="btn sm" id="wlAdd">+ Add</button></span></h3><div class="wl scroll" id="wl"></div></div></div></div>
    <div class="card dock" style="--i:2"><div class="seg tabs" id="dockTabs"><div class="thumb"></div><button data-v="pos">Open trades</button><button data-v="act">Activity</button><button data-v="his">History</button></div><div class="scroll" id="dockBody"></div></div></div>`;
   seg($("#dockTabs"), v => { dock = v; renderDock(true); }).set(dock);
+  seg($("#tfSeg"), v => { chartTf = v; loadChart(true); renderTrade(); });
+  $("#wlAdd").onclick = ev => openAdd(ev.currentTarget);
 }
-let dock = "pos", dockH = 0;
+let dock = "pos", dockH = 0, chartTf = null;
 function spark(arr, up) {
   if (!arr || arr.length < 2) return '<svg width="64" height="24"></svg>';
   const lo = Math.min(...arr), hi = Math.max(...arr), w = 64, h = 24, pts = arr.map((v, i) => [i / (arr.length - 1) * w, h - 2 - (v - lo) / (hi - lo || 1) * (h - 4)]);
@@ -187,17 +192,17 @@ function renderTrade() {
   if (!$("#tName")) { buildTrade(); ensureChart(); }
   const e = S.engine, ins = insts(), i = S.cfg.instruments.find(x => x.id === sel); if (!i) return;
   const st = e.status[i.id] || {}, pos = e.positions.find(p => p.id === i.id), s = short(i);
-  setHTML($("#tCoin"), coinHTML(i)); $("#tName").textContent = NAMES[s] || s; $("#tSub").textContent = (i.market === "futures" ? s + "USDT perpetual" : "Forex") + " · 4h candles";
+  setHTML($("#tCoin"), coinHTML(i)); $("#tName").textContent = nameOf(i); $("#tSub").textContent = ({ futures: s + "USDT perpetual", forex: "Forex", stock: CATLBL[i.cat] || "Stock" })[i.market] + " · " + (chartTf || i.tf) + " candles"; $("#tfSeg").set(chartTf || i.tf);
   roll($("#tPrice"), px(st.price)); const ch = $("#tChg"), c24 = (sparks[i.id] || {}).c || 0; ch.textContent = pct(c24) + " 24h"; ch.className = "pill " + (c24 >= 0 ? "up" : "down");
   $("#tStrat").textContent = { donchian: "Breakout strategy", emacross: "EMA cross strategy", pullback: "Pullback strategy" }[i.strategy] || i.strategy;
   const nb = st.next_bar ? st.next_bar - e.now : null; let msg;
   if (st.error) msg = `<svg class="i" data-i="shield-alert"></svg><span>Data hiccup on this market: <b>${esc(st.error)}</b>. Retrying automatically.</span>`;
   else if (pos) msg = `<svg class="i" data-i="${pos.side > 0 ? "trending-up" : "trending-down"}"></svg><span>Holding a <b>${sideWord(pos.side)}</b> position, <b class="${cls(pos.upnl)}">${sm(pos.upnl)}</b> so far. Safety stop at <b>${px(pos.stop)}</b>.</span>`;
-  else msg = `<svg class="i" data-i="activity"></svg><span>${st.signal ? "A signal just fired - I'm checking risk limits." : "Watching for a breakout."} Next 4-hour candle closes in <b>${nb == null ? "--" : dur(nb)}</b>.</span>`;
+  else msg = `<svg class="i" data-i="activity"></svg><span>${st.signal ? "A signal just fired - I'm checking risk limits." : "Watching for a breakout."} Next ${TFLBL[i.tf] || i.tf} candle closes in <b>${nb == null ? "--" : dur(nb)}</b>.</span>`;
   setHTML($("#tStatus"), msg);
-  const wl = ins.map(x => { const t = e.status[x.id] || {}, sp = sparks[x.id] || {}, up = (sp.c || 0) >= 0, hold = e.positions.some(p => p.id === x.id);
-    return `<div class="wl-item ${x.id === sel ? "on" : ""}" data-id="${esc(x.id)}">${coinHTML(x)}<div><div class="t1">${hold ? '<span class="dot"></span>' : ""}${esc(short(x))}</div><div class="t2">${esc(NAMES[short(x)] || "")}</div></div><div>${spark(sp.s, up)}</div><div class="r"><div class="t1">${px(t.price)}</div><div class="t2 ${up ? "up" : "down"}">${pct(sp.c || 0, 1)}</div></div></div>`; }).join("");
-  if (setHTML($("#wl"), wl)) $$(".wl-item", $("#wl")).forEach(el => el.onclick = () => { sel = el.dataset.id; TC.inst !== sel && loadChart(); renderTrade(); }); $("#wlN").textContent = ins.length;
+  const wl = ins.map(x => { const t = e.status[x.id] || {}, sp = sparks[x.id] || {}, up = (sp.c || 0) >= 0, hold = e.positions.some(p => p.id === x.id || p.id === "day:" + x.id);
+    return `<div class="wl-item ${x.id === sel ? "on" : ""}" data-id="${esc(x.id)}">${coinHTML(x)}<div><div class="t1">${hold ? '<span class="dot"></span>' : ""}${esc(short(x))}</div><div class="t2">${esc(nameOf(x))}</div></div><div>${spark(sp.s, up)}</div><div class="r"><div class="t1">${px(t.price)}</div><div class="t2 ${up ? "up" : "down"}">${pct(sp.c || 0, 1)}</div></div><button class="star ${x.fav ? "on" : ""}" data-fav="${esc(x.id)}">&#9733;</button></div>`; }).join("");
+  if (setHTML($("#wl"), wl)) $$(".wl-item", $("#wl")).forEach(el => el.onclick = ev => { if (ev.target.closest("[data-fav]")) { ev.stopPropagation(); const id = el.dataset.id; return favApi(id, !S.cfg.instruments.find(x => x.id === id).fav); } sel = el.dataset.id; chartTf = null; loadChart(true); renderTrade(); }); $("#wlN").textContent = ins.length;
   renderDock();
 }
 function renderDock(force) {
@@ -222,13 +227,14 @@ function buildPortfolio() {
     <div class="card" style="--i:1"><h3>Sentinel insight <svg class="i" data-i="sparkles" style="color:var(--acc2)"></svg></h3><div class="insight" id="insight"></div><div class="row" id="tags" style="margin-top:6px"></div></div>
    </div>
    <div class="grid g5" id="kpis" style="margin-top:14px;--i:2"></div>
-   <div class="grid g2" style="margin-top:14px"><div class="card" style="--i:3"><h3>Safety systems <span class="sub">live limits</span></h3><div id="meters"></div></div><div class="card" style="--i:4"><h3>Open trades</h3><div class="scroll" id="pPos"></div></div></div></div>`;
+   <div class="grid g2" style="margin-top:14px"><div class="card" style="--i:3"><h3>Safety systems <span class="sub">live limits</span></h3><div id="meters"></div></div><div class="card" style="--i:4"><h3>Open trades</h3><div class="scroll" id="pPos"></div></div></div>
+   <div class="card" style="margin-top:14px;--i:5"><h3>My markets <span class="sub">&#9733; favorites stay on top</span></h3><div class="mgrid" id="hMarkets"></div></div></div>`;
   seg($("#pRange"), v => { PF.range = v; drawEq(); }).set(PF.range);
   PF.chart = mkChart($("#eqBox"), { rightPriceScale: { borderVisible: false, scaleMargins: { top: .12, bottom: .1 } } });
   PF.series = PF.chart.addBaselineSeries({ baseValue: { type: "price", price: 1000 }, topLineColor: COL.up, topFillColor1: "rgba(46,211,160,.28)", topFillColor2: "rgba(46,211,160,0)", bottomLineColor: COL.down, bottomFillColor1: "rgba(255,94,122,0)", bottomFillColor2: "rgba(255,94,122,.28)", lineWidth: 2, priceLineVisible: false });
 }
 function narrate() {
-  const e = S.engine, n = insts().length, ps = e.positions, ai = S.cfg.ai;
+  const e = S.engine, n = trading().length, ps = e.positions, ai = S.cfg.ai;
   if (e.halted) return "**Trading is halted.** The safety systems stopped everything. Open **Settings** and press **Resume** when you're ready.";
   if (!e.running) return "I'm **paused**. Press **Run** and I'll go back to watching " + n + " markets.";
   let t = "All good. I'm watching **" + n + " markets** around the clock. ";
@@ -246,7 +252,7 @@ function renderPortfolio() {
   const e = S.engine, r = S.cfg.risk, ps = e.positions, profit = e.equity - e.start_equity;
   roll($("#pTotal"), money(e.equity)); const sn = $("#pSince"); sn.textContent = sm(profit) + " (" + pct(e.total_return_pct) + ") since start"; sn.className = "pill " + (profit >= 0 ? "up" : "down");
   $("#pToday").textContent = "Today " + sm(e.day_pnl) + " (" + pct(e.day_pnl_pct) + ")";
-  words($("#insight"), narrate()); renderStart();
+  words($("#insight"), narrate()); renderStart(); renderHomeMarkets();
   const nbs = Object.values(e.status).map(s => s.next_bar).filter(Boolean), nb = nbs.length ? Math.min(...nbs) - e.now : null;
   setHTML($("#tags"), `<span class="chip" data-tip="The most one losing trade can cost">Risk / trade ${money(e.equity * r.per_trade_pct / 100)}</span><span class="chip" data-tip="Next 4-hour candle close, when I look for new signals">Next candle ${nb == null ? "--" : dur(nb)}</span><span class="chip" data-tip="Off, Advise (rates signals) or Veto (can block)">AI ${S.cfg.ai.mode}</span>`);
   setHTML($("#kpis"), kpiSet(e, r, ps));
@@ -304,37 +310,6 @@ function renderLab(r) {
 }
 
 /* ---------- AI page */
-function buildAI() {
-  $("#p-ai").innerHTML = `<div class="rise"><div class="grid g2"><div class="card" style="--i:0"><h3>AI analyst <span class="pill acc" id="aiState"></span></h3>
-   <p class="note" style="margin-top:0">For each trade signal that passes every safety check, the analyst reads one compact briefing (trend, volatility, funding rate, open interest, long/short crowding, your open book) and rates the odds of follow-through. It can call three read-only tools to fetch more facts. Typical cost: <b>about 0.05 cents</b> per signal, because the fixed part of the prompt is cached.</p>
-   <div class="seg" id="aiMode" style="margin-bottom:14px"><div class="thumb"></div><button data-v="off">Off</button><button data-v="advise">Advise</button><button data-v="veto" class="pro">Veto</button></div>
-   <div class="form"><div><label class="f">Provider</label><select id="aiProv"></select></div><div class="pro"><label class="f">Model</label><input id="aiModel"></div><div><label class="f">API key <span id="aiHas" class="up"></span></label><input id="aiKey" type="password" placeholder="stored only on this PC" autocomplete="off"></div><div class="pro"><label class="f">Veto cut-off %</label><input id="aiMinP" type="number" min="0" max="100"></div></div>
-   <div class="row" style="margin-top:14px"><button class="btn pri" id="aiSave">Save</button><button class="btn" id="aiTest" data-tip="Sends one tiny message (~25 tokens, a fraction of a cent)">Test connection</button><span class="sub" id="aiTestOut"></span></div><p class="sub" id="aiHelp" style="margin-top:12px"></p></div>
-   <div class="card" style="--i:1"><h3>Spending guardrails</h3><div id="aiBudget"></div><div class="sub" id="aiBudgetNote" style="margin-top:12px"></div></div></div>
-   <div class="grid g2 pro" style="margin-top:14px"><div class="card" style="--i:2"><h3>Does the AI actually help? <span class="sub">live scorecard</span></h3><div id="aiScore"></div></div><div class="card" style="--i:3"><h3>Historical test <span class="sub">6,800 signals</span></h3><div id="aiVal"></div></div></div>
-   <div class="card pro" style="margin-top:14px;--i:4"><h3>Recent decisions <button class="btn sm" id="aiBrief" data-tip="One call, about 300 tokens">Write a brief</button></h3><div class="note" id="aiBriefOut" style="white-space:pre-wrap;margin-bottom:8px"></div><div class="scroll" id="aiLog"></div></div></div>`;
-  seg($("#aiMode")); $("#aiProv").innerHTML = Object.keys(S.presets).map(k => `<option>${k}</option>`).join("");
-  $("#aiProv").onchange = () => { const p = S.presets[$("#aiProv").value]; $("#aiModel").value = p[1]; aiHelp(); };
-  $("#aiSave").onclick = guard(async () => { await api("/api/config", { ai: { mode: $("#aiMode").querySelector(".on").dataset.v, provider: $("#aiProv").value, base_url: S.presets[$("#aiProv").value][0] || S.cfg.ai.base_url, model: $("#aiModel").value, min_p: +$("#aiMinP").value, api_key: $("#aiKey").value } }); $("#aiKey").value = ""; toast("AI settings saved", "info", "Saved"); await refresh(); renderAI(true); });
-  $("#aiTest").onclick = guard(async () => { $("#aiTestOut").innerHTML = '<span class="spin"></span>testing'; const r = await api("/api/ai/test", { provider: $("#aiProv").value, model: $("#aiModel").value, api_key: $("#aiKey").value }, true); $("#aiTestOut").innerHTML = r.ok ? `<span class="up">Connected</span> · ${r.ms} ms · ${r.tokens} tokens` : `<span class="down">${esc(r.error)}</span>`; });
-  $("#aiBrief").onclick = guard(async () => { $("#aiBriefOut").innerHTML = '<span class="spin"></span>writing'; const r = await api("/api/ai/brief", {}, true); $("#aiBriefOut").textContent = r.ok ? r.text : "Failed: " + r.error; });
-}
-function aiHelp() { const t = { deepseek: "DeepSeek: platform.deepseek.com. A few dollars lasts months at this usage.", gemini: "Google Gemini: aistudio.google.com. Has a free tier (check current limits).", groq: "Groq: console.groq.com. Has a free tier (check current limits).", openrouter: "OpenRouter: some models are free (names ending :free).", openai: "OpenAI API (a ChatGPT subscription does not include API access).", custom: "Any OpenAI-compatible endpoint, even local Ollama.", claude_cli: "Uses the Claude CLI on this PC, logged into your Claude account. No key needed." }; $("#aiHelp").textContent = t[$("#aiProv").value] || ""; }
-let aiT = 0;
-async function renderAI(force) {
-  if (!$("#aiMode")) buildAI(); const a = S.cfg.ai;
-  if (!$("#aiMode")._init) { $("#aiMode")._init = 1; $("#aiMode").set(a.mode); $("#aiProv").value = a.provider; $("#aiModel").value = a.model; $("#aiMinP").value = a.min_p; aiHelp(); }
-  $("#aiHas").textContent = a.has_api_key ? "saved" : ""; setHTML($("#aiState"), { off: "Off", advise: "Advising", veto: "Veto on" }[a.mode]);
-  if (!force && Date.now() - aiT < 8000) return; aiT = Date.now();
-  const l = await api("/api/ai/log", undefined, true), sp = l.spend, b = l.budget, hitr = sp.hit + sp.miss ? sp.hit / (sp.hit + sp.miss) * 100 : 0;
-  setHTML($("#aiBudget"), meter("Today (money)", sp.usd_day / b.max_usd_day, "$" + sp.usd_day.toFixed(4) + " / $" + b.max_usd_day, "Hard daily dollar cap. When it's reached the AI simply stops; trading continues.") + meter("Today (calls)", sp.calls_day / b.max_calls_day, sp.calls_day + " / " + b.max_calls_day, "Hard daily call cap.") + meter("Lifetime cap", sp.usd / b.max_usd_total, "$" + sp.usd.toFixed(3) + " / $" + b.max_usd_total, "Total the app will ever spend on AI until you raise this."));
-  $("#aiBudgetNote").innerHTML = `${sp.calls} calls · ${sp.tokens.toLocaleString()} tokens · cache hit rate <b>${hitr.toFixed(0)}%</b> (cached tokens cost ~100x less) · ${l.peak ? "peak" : "off-peak"} pricing now. The analyst never runs when a trade is already blocked, and never twice for the same candle.`;
-  const sc = l.score; setHTML($("#aiScore"), `<p class="note" style="margin-top:0">Every trade is tagged with the AI's rating. This table shows what actually happened to trades it rated high vs. low. ${sc.n < 30 ? `<b>Only ${sc.n} rated trades so far, so it's too early to conclude anything.</b>` : ""}</p><table><tr><th>AI rating</th><th>Trades</th><th>Win rate</th><th>Avg result</th></tr>${sc.rows.map(r => `<tr><td class="t">${r.label}</td><td>${r.n}</td><td>${r.win == null ? "--" : r.win.toFixed(0) + "%"}</td><td class="${cls(r.avg || 0)}">${r.avg == null ? "--" : sm(r.avg)}</td></tr>`).join("")}</table>`);
-  const v = l.validation; setHTML($("#aiVal"), v ? `<table><tr><th>Setup</th><th>Trades</th><th>Sharpe*</th><th>Return*</th></tr>${v.rows.map((r, i) => `<tr><td class="t">${esc(r.label)}</td><td>${r.trades}</td><td class="${i ? cls(r.oos - v.rows[0].oos) : ""}">${r.oos.toFixed(2)}</td><td class="${i ? cls(r.oos_ret - v.rows[0].oos_ret) : ""}">${pct(r.oos_ret, 1)}</td></tr>`).join("")}</table><p class="sub">*on data the tuning never saw. ${esc(v.verdict)}</p>` : "");
-  setHTML($("#aiLog"), l.rows.length ? `<table><tr><th>Time</th><th>Market</th><th>Decision</th><th>Analyst said</th></tr>${l.rows.map(r => `<tr><td class="mono" style="color:var(--tx3)">${dt(r.t)}</td><td class="t">${esc(r.inst)}</td><td><span class="pill ${r.take ? "up" : "down"}">${r.take ? "Go" : "Blocked"}</span></td><td class="t">${esc(r.reply || "")}</td></tr>`).join("")}</table>` : '<div class="empty">No ratings yet. They appear when a trade signal fires.</div>');
-}
-
-/* ---------- SETTINGS page */
 function buildSettings() {
   $("#p-settings").innerHTML = `<div class="rise"><div class="grid g2">
    <div class="card" style="--i:0"><h3>Account</h3><div class="form"><div><label class="f">Mode</label><select id="sMode"><option value="paper">Paper (built-in simulator)</option><option value="live">Exchange (demo / testnet / real)</option></select></div><div><label class="f">Account size</label><button class="btn" id="sAcct" style="width:100%">Change size and risk</button></div></div>
@@ -344,9 +319,11 @@ function buildSettings() {
    <div class="card" style="--i:1"><h3>Safety limits</h3><div class="form"><div><label class="f">Risk per trade %</label><input id="rPer" type="number" step="0.1"></div><div><label class="f">Max open trades</label><input id="rMax" type="number"></div><div><label class="f">Max leverage / trade</label><input id="rLev" type="number" step="0.5"></div><div><label class="f">Max total leverage</label><input id="rTot" type="number" step="0.5"></div><div><label class="f">Daily loss stop %</label><input id="rDay" type="number" step="0.5"></div><div><label class="f">Drawdown halt %</label><input id="rDd" type="number"></div></div></div>
    <div class="card" style="--i:2"><h3>Exchange link</h3><div class="form"><div><label class="f">Exchange</label><select id="bEx"><option value="bybit">Bybit</option><option value="binance">Binance Futures</option></select></div><div><label class="f">Network</label><select id="bNet"></select></div><div><label class="f">API key <span id="bkHas" class="up"></span></label><input id="bKey" type="password" autocomplete="off"></div><div><label class="f">API secret</label><input id="bSec" type="password" autocomplete="off"></div></div>
     <div class="row" style="margin-top:14px"><button class="btn" id="bTest">Save and test connection</button><span class="sub" id="bTestOut"></span></div><p class="sub">Bybit Demo Trading = real prices, play money, email sign-up, no ID. Create keys with trade permission and no withdrawal permission.</p></div>
+   <div class="card pro" style="--i:3"><h3>Swing bot timeframe</h3><p class="note" style="margin-top:0">How often the rule-based bot looks for trades. Faster means more trades and more fees. Measured: only <b>4 hours</b> was profitable.</p><div class="seg" id="spdSeg"><div class="thumb"></div>${["5m", "15m", "1h", "4h"].map(t => `<button data-v="${t}">${t}</button>`).join("")}</div></div>
    <div class="card pro" style="--i:3"><h3>TradingView webhook</h3><p class="note" style="margin-top:0">Optional. Expose port 8765 with a tunnel (<code>ngrok http 8765</code>) and use <code>https://&lt;tunnel&gt;/hook</code> as an alert's webhook URL. Only <code>/hook</code> is reachable through a tunnel. Needs a paid TradingView plan.</p><label class="f">Secret</label><input id="whSecret" readonly onclick="this.select()"></div></div>
    <div class="card pro" style="margin-top:14px;--i:4"><h3>Markets <button class="btn sm" id="addInst">Add market</button></h3><div class="scroll" style="max-height:none" id="instTable"></div></div>
    <div class="row" style="margin-top:16px"><button class="btn pri" id="sSave">Save settings</button><button class="btn" id="sResume">Resume after halt</button><span class="grow"></span><button class="btn danger" id="sReset">Reset paper account</button></div></div>`;
+  seg($("#spdSeg"), v => { if (v !== S.cfg.instruments[0].tf) setSpeed(v, $("#spdSeg")); });
   $("#sMode").onchange = () => { $("#liveBox").style.display = $("#sMode").value === "live" && S.cfg.mode !== "live" ? "block" : "none"; };
   $("#sAcct").onclick = e => openAcct(e.currentTarget); $("#bEx").onchange = () => fillNets($("#bEx").value);
   $("#sPro").onchange = e => { simple = !e.target.checked; LS.set("simple", simple ? "1" : "0"); applyView(); }; $("#sSound").onchange = e => { soundOn = e.target.checked; LS.set("sound", soundOn ? "1" : "0"); beep([600, 900]); };
@@ -364,7 +341,7 @@ function fillNets(ex) { const sel = $("#bNet"), want = ex === "bybit" ? [["demo"
 function brokerPatch() { const ex = $("#bEx").value, k = $("#bKey").value, sc = $("#bSec").value, net = $("#bNet").value; return ex === "bybit" ? { exchange: ex, bybit_env: net, bybit_key: k, bybit_secret: sc } : { exchange: ex, binance_testnet: net === "true", binance_key: k, binance_secret: sc }; }
 function fillSettings(force) {
   if (!$("#sMode")) buildSettings(); if (!force && document.activeElement && document.activeElement.closest("#p-settings")) return;
-  const c = S.cfg, r = c.risk; $("#sMode").value = c.mode; $("#sPro").checked = !simple; $("#sSound").checked = soundOn;
+  const c = S.cfg, r = c.risk; $("#spdSeg").set(c.instruments[0] ? c.instruments[0].tf : "4h"); $("#sMode").value = c.mode; $("#sPro").checked = !simple; $("#sSound").checked = soundOn;
   [["rPer", "per_trade_pct"], ["rMax", "max_positions"], ["rLev", "max_leverage_per_pos"], ["rTot", "max_total_leverage"], ["rDay", "daily_loss_limit_pct"], ["rDd", "max_drawdown_halt_pct"]].forEach(([id, k]) => $("#" + id).value = r[k]);
   fillNets(c.broker.exchange); $("#bEx").value = c.broker.exchange; $("#bNet").value = c.broker.exchange === "bybit" ? c.broker.bybit_env : String(c.broker.binance_testnet);
   $("#bkHas").textContent = (c.broker.exchange === "bybit" ? c.broker.has_bybit_key : c.broker.has_binance_key) ? "saved" : ""; $("#whSecret").value = c.webhook_secret; $("#sMode").onchange();
@@ -388,21 +365,22 @@ function openAcct(trigger) {
   $("#aOk", sh).onclick = guard(async () => { if (acctRisk !== S.cfg.risk.per_trade_pct) await api("/api/config", { risk: { per_trade_pct: acctRisk } }); if (!live && +$("#aAmt").value !== S.engine.start_equity) await api("/api/account", { amount: +$("#aAmt").value }); closeSheet(); toast("Account updated", "info", "Ready"); await refresh(); });
 }
 $("#acctChip").onclick = e => S && openAcct(e.currentTarget);
+$("#aiChip").onclick = e => S && openAI(e.currentTarget);
 
 /* ---------- router, nav, command palette */
-const PAGES = [["portfolio", "layout-dashboard", "Home", 0], ["trade", "chart-candlestick", "Markets", 0], ["lab", "flask-conical", "Lab", 1], ["ai", "sparkles", "AI helper", 0], ["help", "circle-help", "Help", 0], ["settings", "settings", "Settings", 0]];
+const PAGES = [["portfolio", "layout-dashboard", "Home", 0], ["trade", "chart-candlestick", "Markets", 0], ["trader", "bot", "Trader", 0], ["lab", "flask-conical", "Lab", 1], ["ai", "sparkles", "AI helper", 0], ["help", "circle-help", "Help", 0], ["settings", "settings", "Settings", 0]];
 $("#nav").insertAdjacentHTML("beforeend", PAGES.map(p => `<button data-p="${p[0]}" data-label="${p[2]}" aria-label="${p[2]}" class="${p[3] ? "pro" : ""}"><svg class="i" data-i="${p[1]}"></svg></button>`).join(""));
 function moveNav() { const b = $(".nav button.on"), th = $(".nav .thumb"); if (!b || !b.offsetParent) { th.style.opacity = 0; return; } th.style.opacity = 1; th.style.transform = `translateY(${b.offsetTop}px)`; }
 function go(p) {
   const meta = PAGES.find(x => x[0] === p); if (!meta || (meta[3] && simple)) p = "portfolio";
   if (p === page && S) return; const run = () => {
     page = p; $$(".page").forEach(e => e.classList.toggle("on", e.id === "p-" + p)); $$(".nav button").forEach(b => b.classList.toggle("on", b.dataset.p === p)); $("#title").textContent = PAGES.find(x => x[0] === p)[2]; moveNav(); $("#views").scrollTop = 0;
-    if (!S) return; ({ trade: () => { renderTrade(); loadChart(); }, portfolio: () => { renderPortfolio(); drawEq(); }, lab: () => { if (!$("#lInst")) buildLab(); }, ai: () => renderAI(true), help: () => renderHelp(), settings: () => fillSettings(true) })[p]();
+    if (!S) return; ({ trade: () => { renderTrade(); loadChart(); }, portfolio: () => { renderPortfolio(); drawEq(); }, lab: () => { if (!$("#lInst")) buildLab(); }, trader: () => renderTrader(), ai: () => renderAI(true), help: () => renderHelp(), settings: () => fillSettings(true) })[p]();
   }; swap(run);
 }
 $$(".nav button").forEach(b => b.onclick = () => go(b.dataset.p));
 function openCmd() {
-  const acts = [["Go to Home", "layout-dashboard", () => go("portfolio")], ["Go to Markets", "chart-candlestick", () => go("trade")], ...(simple ? [] : [["Go to Strategy Lab", "flask-conical", () => go("lab")]]), ["Go to AI helper", "sparkles", () => go("ai")], ["Go to Help", "circle-help", () => go("help")], ["Go to Settings", "settings", () => go("settings")],
+  const acts = [["Go to Home", "layout-dashboard", () => go("portfolio")], ["Go to Markets", "chart-candlestick", () => go("trade")], ...(simple ? [] : [["Go to Strategy Lab", "flask-conical", () => go("lab")]]), ["Go to Trader (day trading + chat)", "bot", () => go("trader")], ["Go to AI helper", "sparkles", () => go("ai")], ["Add a market", "list", () => openAdd()], ["Connect an AI", "sparkles", () => openAI()], ["Go to Help", "circle-help", () => go("help")], ["Go to Settings", "settings", () => go("settings")],
     ["Take the guided tour", "circle-help", () => startTour(0)], ["Re-run the setup guide", "list", () => openWizard()],
     [S.engine.running ? "Pause trading" : "Run trading", S.engine.running ? "pause" : "play", () => engineAct(S.engine.running ? "stop" : "start")], ["Change account size and risk", "wallet", () => openAcct()], [simple ? "Switch to Pro mode" : "Switch to Simple mode", "sliders-horizontal", () => { simple = !simple; LS.set("simple", simple ? "1" : "0"); applyView(); }],
     ...insts().map(i => ["Open " + short(i) + " chart", "trending-up", () => { sel = i.id; go("trade"); if (page === "trade") { renderTrade(); loadChart(); } }])];
@@ -417,7 +395,7 @@ $("#searchBtn").onclick = openCmd;
 document.addEventListener("keydown", e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); sheetOpen ? closeSheet() : S && openCmd(); return; }
   if (e.key === "Escape") closeSheet(); if (/INPUT|TEXTAREA|SELECT/.test((document.activeElement || {}).tagName) || e.ctrlKey || e.metaKey || sheetOpen) return;
-  const vis = PAGES.filter(p => !(simple && p[3])), k = "123456".indexOf(e.key); if (k >= 0 && vis[k]) go(vis[k][0]);
+  const vis = PAGES.filter(p => !(simple && p[3])), k = "1234567".indexOf(e.key); if (k >= 0 && vis[k]) go(vis[k][0]);
 });
 const engineAct = guard(async a => { await api("/api/engine", { action: a }); await refresh(); });
 seg($("#engSeg"), v => engineAct(v === "run" ? "start" : "stop"));
@@ -439,6 +417,7 @@ function tick() {
   if (n - tk.ch > 30000) { tk.ch = n; if (page === "trade" && S) loadChart(); }
   if (n - tk.eq > 30000) { tk.eq = n; if (page === "portfolio" && S) drawEq(); }
   if (page === "ai" && S) renderAI();
+  if (page === "trader" && S) thPoll();
 }
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { tk = { st: 0, ch: 0, sp: 0, eq: 0 }; tick(); } });
 const moveSegs = () => { $$(".seg").forEach(x => x.move && x.move()); moveNav(); };

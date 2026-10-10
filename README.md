@@ -3,7 +3,7 @@
 **An autonomous crypto and forex trading bot with a TradingView-style dashboard, a guided first-run experience, and a token-lean AI analyst.**
 Created by Reid. Pure Python standard library on the server, plain JavaScript in the browser: no dependencies to install, no build step, no paid services required.
 
-![Python](https://img.shields.io/badge/python-3.7%2B-blue) ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen) ![Tests](https://img.shields.io/badge/tests-36%20passing-brightgreen) ![License](https://img.shields.io/badge/license-MIT-lightgrey) ![Mode](https://img.shields.io/badge/default%20mode-paper%20trading-blueviolet)
+![Python](https://img.shields.io/badge/python-3.7%2B-blue) ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen) ![Tests](https://img.shields.io/badge/tests-54%20passing-brightgreen) ![License](https://img.shields.io/badge/license-MIT-lightgrey) ![Mode](https://img.shields.io/badge/default%20mode-paper%20trading-blueviolet)
 
 > **Disclaimer.** Sentinel is educational software, not financial advice. It starts in practice (paper) mode and has never been run against a real-money account. Past performance does not predict future results. You can lose money trading.
 
@@ -18,7 +18,10 @@ The first launch opens a **setup wizard** (practice balance, risk level, optiona
 
 ## What it does
 
-- **Trades 13 markets 24/7** on 4-hour candles: 10 crypto perpetual futures (BTC, ETH, SOL, BNB, XRP, DOGE, ADA, LINK, LTC, AVAX) and 3 forex pairs (EUR/USD, GBP/USD, USD/JPY).
+- **Trades a watchlist you control, 24/7**: starts with 10 crypto perps and 3 forex pairs on 4-hour candles, lists 7 big US stocks watch-only, and lets you add anything with the **+ button**: a searchable catalog of 190+ curated markets, every live Binance perpetual (500+), and Yahoo search for any other ticker (stocks, ETFs, indices, commodities, forex). **Star** favorites to pin them to the top; tag each market *Bot trades* or *Watching*.
+- **AI day trader + chat** (Trader page): a scanner flags setups on 15-minute candles and the AI decides long/short/flat with stop and target. Every scan, decision and trade streams into a **Live thoughts** feed, and a read-only **chat** (with tool use) answers questions about the account and its own decisions. Paper-tested first; see the honest results below.
+- **Switchable timeframes**: chart timeframe 1m to 1d, and the swing bot's own timeframe (5m/15m/1h/4h) from Settings.
+- **15 AI providers**, one obvious place for the key (top-bar AI chip): DeepSeek, Gemini, Groq, Cerebras, OpenAI, Anthropic Claude, xAI Grok, OpenRouter, Together, Fireworks, Mistral, Ollama, LM Studio, any OpenAI-compatible URL, and the Claude CLI, with live model lists and plain-English error messages.
 - **Fully autonomous loop**: polls markets in parallel, evaluates strategies on closed bars, sizes every trade by risk, places and trails a stop, journals everything, and survives restarts.
 - **Hard safety systems**: per-trade risk cap, max open trades, leverage caps, daily-loss stop, drawdown halt that flattens the book, one-click kill switch.
 - **Paper trading that behaves like an exchange**: identical fees, slippage and funding to the backtester, plus Bybit's real lot-size and minimum-order rules, so small accounts behave realistically.
@@ -31,8 +34,9 @@ The first launch opens a **setup wizard** (practice balance, risk level, optiona
 
 | Page | Purpose |
 |---|---|
-| **Home** | Account value with animated number roll, equity curve (1H/1D/1W/All), plain-English insight, key stats, live safety meters, getting-started checklist |
-| **Markets** | TradingView Lightweight Charts candlesticks with strategy levels, trade markers and stop lines; watchlist with sparklines; open trades, activity log, history |
+| **Home** | Account value with animated number roll, equity curve (1H/1D/1W/All), plain-English insight, key stats, live safety meters, getting-started checklist, **My markets** grid (favorites first, add/remove) |
+| **Trader** | AI day trading controls, live thoughts feed, chat with the trader |
+| **Markets** | TradingView Lightweight Charts candlesticks (1m to 1d switcher) with strategy levels, trade markers and stop lines; watchlist with sparklines; open trades, activity log, history |
 | **AI helper** | Mode (Off/Advise/Veto), provider and key, spending guardrails, live scorecard, validation table, decision log |
 | **Lab** *(Pro)* | Backtest, optimize, whole-portfolio test, with an honest verdict banner |
 | **Help** | Quick start, how it works, glossary, troubleshooting, replay tour |
@@ -76,6 +80,8 @@ flowchart LR
 |---|---:|---|
 | `server.py` | 324 | HTTP server, JSON API, static files, background jobs, local-only guard |
 | `tradebot/engine.py` | 425 | Autonomous engine: parallel polling, per-bar logic, risk-checked order flow, kill switch, accounting |
+| `tradebot/daytrader.py` / `chat.py` | 280 | AI day trader (scanner, dossier, decision, reward/risk gate) and the read-only tool-using chat |
+| `tradebot/llm.py` / `catalog.py` | 330 | 15-provider registry with per-provider quirks, model lists, error messages; market catalog, Binance perps, Yahoo search |
 | `tradebot/analyst.py` | 220 | AI analyst: dossier, tool loop, prompt-cache-friendly layout, budgets, circuit breaker |
 | `tradebot/backtest.py` | 144 | Bar-by-bar simulator with fees, slippage, funding, walk-forward optimizer, portfolio combiner |
 | `tradebot/strategies.py` / `indicators.py` | 139 | Donchian breakout, EMA-cross + ADX, RSI pullback; EMA/SMA/RSI/ATR/ADX/Donchian |
@@ -84,7 +90,7 @@ flowchart LR
 | `tradebot/data.py` / `context.py` | 144 | Public market data with CSV cache; AI feature extraction |
 | `web/` | ~850 | Single-page dashboard (`app.js`, `guide.js`, `style.css`, `index.html`) + `vendor/` |
 | `sentinel.py` | 138 | Command-line controller for a running instance |
-| `tests.py` | 608 | 36 tests (see below) |
+| `tests.py` | 608 | 54 tests (see below) |
 
 ## Trading logic (specification)
 
@@ -114,6 +120,18 @@ flowchart LR
 | 1.0% | +109% | 13.1% | 29% | 0.61 |
 
 Both halves of the period were profitable (Sharpe 0.6 / 0.5). The settings were chosen after seeing this data, and individual markets often show no edge on unseen data. **Expect worse in live trading.** The live engine, fed historical bars one at a time, reproduces the backtester's results (33 vs 36 trades, similar P&L), which is verified in the test suite.
+
+## Faster trading: what we measured
+
+Taker fees and slippage cost about 0.16% per round trip, which dominates on short candles. Walk-forward results (tuned on the first 60% of history, judged on the unseen last 40%), BTC/ETH/SOL perps, best of Donchian / EMA-cross / RSI-pullback grids:
+
+| Timeframe | History | Unseen-data result |
+|---|---|---|
+| 4 hours | 5 years | slightly profitable portfolio (Sharpe about 0.5) |
+| 1 hour | 3 years | negative on 3 of 3 coins for 2 of 3 strategies; best single case Sharpe +0.22 |
+| 15 minutes | 2 years | negative everywhere (Sharpe -0.5 to -4) |
+
+So the rule-based swing bot stays on 4 hours by default, and switching it faster shows a warning. The **AI day trader** is the experimental answer to "trade faster": rules only *nominate* candidates (typically 5-15% of candles), the AI is told costs are high and to be selective, and every decision is logged and scored. It is **unproven**; run it on practice money and judge it by its own results.
 
 ## AI analyst
 
@@ -154,7 +172,7 @@ Design goals: *accurate inputs, minimal tokens, bounded spend, never in the crit
 
 ## Testing
 
-`python tests.py` runs **36 tests in ~30 s**, none of which can touch a real AI API or exchange (mock servers are used):
+`python tests.py` runs **54 tests in ~30 s**, none of which can touch a real AI API or exchange (mock servers are used):
 
 indicators and backtester sanity (costs hurt, stops bound losses) · live-engine replay equals backtester · accounting reconciliation to the cent · risk limits, kill switch, daily-loss and drawdown guards · tiny-account lot-size rules · webhook auth and validation · Bybit adapter against a signature-verifying mock exchange (open, trail, flatten) · AI analyst: prompt-prefix stability, cost math, tool round-trip, round caps, budget hard-stops, circuit breaker, fail-open, scorecard · API security (secrets never leave, forwarded requests rejected, traversal blocked) · HTTP cache-header correctness across keep-alive connections · first-run flags.
 

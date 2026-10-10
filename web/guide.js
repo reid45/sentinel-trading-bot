@@ -35,18 +35,18 @@ function kpiSet(e, r, ps) {
 function renderStart() {
   const el = $("#startCard"); if (!el) return;
   if (LS.get("hideStart", "0") === "1") { el.style.display = "none"; return; }
-  const e = S.engine, ui = S.cfg.ui || {}, ai = S.cfg.ai, n = insts().length;
+  const e = S.engine, ui = S.cfg.ui || {}, ai = S.cfg.ai, n = trading().length;
   const items = [
     [e.running, "The bot is running", "It watches " + n + " markets and acts when a 4-hour candle closes.", null],
     [ui.onboarded, "Your practice account is set up", "Starting balance " + money(e.start_equity, 0) + ", risk " + S.cfg.risk.per_trade_pct + "% per trade.", ["Change", "acct"]],
     [ui.tour_done, "Take the 1-minute tour", "I point at each important part of the screen and explain it.", ["Start tour", "tour"]],
-    [ai.has_api_key || ai.provider === "claude_cli", "AI helper (optional)", ai.has_api_key ? "Connected. It rates each trade signal." : "Add a cheap or free API key if you want a second opinion on trades. The bot works fine without it.", ["Set up", "ai"]],
+    [ai.has_api_key || ai.provider === "claude_cli", "Connect an AI (optional)", ai.has_api_key ? "Connected. It rates trades, powers day trading and answers your questions." : "Needed for day trading and chat. Works with 14 providers, some free.", ["Connect", "ai"]],
     [e.trades > 0 || e.positions.length > 0, "Wait for the first trade", "The bot only enters on strong breakouts, so this can take hours or days. That is normal.", null]];
   const done = items.filter(i => i[0]).length; el.style.display = done === items.length ? "none" : "block";
   const h = `<h3>Getting started <span class="sub">${done} of ${items.length} done &middot; <a href="#" id="hideStart">hide</a></span></h3><div class="start">${items.map(i => `<div class="it ${i[0] ? "done" : ""}"><span class="ck"></span><div><b>${i[1]}</b><div class="sub">${i[2]}</div></div>${i[3] && !i[0] ? `<button class="btn sm" data-act="${i[3][1]}">${i[3][0]}</button>` : ""}</div>`).join("")}</div>`;
   if (setHTML(el, h)) {
     $("#hideStart", el).onclick = ev => { ev.preventDefault(); LS.set("hideStart", "1"); el.style.display = "none"; };
-    $$("[data-act]", el).forEach(b => b.onclick = () => ({ acct: () => openAcct(b), tour: () => startTour(0), ai: () => go("ai") })[b.dataset.act]());
+    $$("[data-act]", el).forEach(b => b.onclick = () => ({ acct: () => openAcct(b), tour: () => startTour(0), ai: () => openAI(b) })[b.dataset.act]());
   }
 }
 
@@ -67,7 +67,7 @@ function wzDraw(back) {
   icons(root); wzBind();
 }
 function wzWelcome() {
-  return `<div class="label">Welcome</div><h2>Meet Sentinel</h2><p class="lead">A trading bot that watches ${insts().length} crypto and currency markets around the clock and buys or sells for you using one simple idea: <b>follow strong trends and cut losses fast.</b></p>
+  return `<div class="label">Welcome</div><h2>Meet Sentinel</h2><p class="lead">A trading bot that watches ${trading().length} crypto and currency markets around the clock and buys or sells for you using one simple idea: <b>follow strong trends and cut losses fast.</b></p>
    <div class="feat"><div><svg class="i" data-i="shield-alert"></svg><p style="margin:0"><b>Practice mode first</b><span>Real market prices, fake money. You cannot lose real money while you learn.</span></p></div>
    <div><svg class="i" data-i="zap"></svg><p style="margin:0"><b>Safety is built in</b><span>Every trade has an automatic stop-loss, and strict daily and drawdown limits switch the bot off if things go badly.</span></p></div>
    <div><svg class="i" data-i="power"></svg><p style="margin:0"><b>You stay in control</b><span>Pause any time, or press the red button to close everything instantly.</span></p></div></div>`;
@@ -82,15 +82,15 @@ function wzMoney() {
 }
 function wzAI() {
   return `<div class="label">Step 2 of 3 &middot; optional</div><h2>Add an AI helper?</h2><p class="lead">When the bot spots a trade, the AI helper can read a short briefing and rate its chances. It costs about <b>a twentieth of a cent</b> per trade, and the bot works fine without it. You can add this later.</p>
-   <div class="choice" id="wzProv">${[["deepseek", "DeepSeek", "Cheap, a few dollars lasts months"], ["gemini", "Google Gemini", "Has a free tier"]].map(([k, n, d]) => `<button data-p="${k}" class="${WZ.provider === k ? "on" : ""}"><b>${n}</b><span>${d}</span></button>`).join("")}</div>
-   <label class="f" style="margin-top:16px">API key (optional, stored only on this computer)</label><input id="wzKey" type="password" autocomplete="off" placeholder="Paste a key, or leave empty to skip" value="${esc(WZ.key)}">
+   <div class="choice" id="wzProv">${[["deepseek", "DeepSeek", "Cheap, a few dollars lasts months"], ["gemini", "Google Gemini", "Has a free tier"], ["__more", "More providers", "OpenAI, Claude, Grok, local and 10 more"]].map(([k, n, d]) => `<button data-p="${k}" class="${WZ.provider === k ? "on" : ""}"><b>${n}</b><span>${d}</span></button>`).join("")}</div>
+   ${WZ.provider === "__more" ? '<p class="note" style="margin-top:16px">You will pick from every provider on the next screen right after setup.</p>' : `<label class="f" style="margin-top:16px">API key (optional, stored only on this computer) <a href="${esc(PROV(WZ.provider).key_url || "#")}" target="_blank" rel="noopener" style="margin-left:8px">Get a key &rarr;</a></label><input id="wzKey" type="password" autocomplete="off" placeholder="Paste a key, or leave empty to skip" value="${esc(WZ.key)}">
    <div class="row" style="margin-top:12px"><button class="btn sm" id="wzTest" ${WZ.key ? "" : "disabled"}>Test key</button><span class="sub" id="wzTestOut">${WZ.tested}</span></div>
-   <p class="sub" style="margin-top:12px">${WZ.provider === "deepseek" ? "Get a key at platform.deepseek.com." : "Get a key at aistudio.google.com."} The app also enforces a hard daily and lifetime spending cap.</p>`;
+   <p class="sub" style="margin-top:12px">${esc(PROV(WZ.provider).note || "")} The app also enforces a hard daily and lifetime spending cap.</p>`}`;
 }
 function wzReady() {
   return `<div class="label">Step 3 of 3</div><h2>Ready to start</h2><p class="lead">Here is what will happen when you press the button:</p>
    <div class="feat"><div><svg class="i" data-i="wallet"></svg><p style="margin:0"><b>${money(WZ.amt, 0)} of practice money</b><span>Each trade risks at most ${WZ.risk}% (${money(WZ.amt * WZ.risk / 100)}).</span></p></div>
-   <div><svg class="i" data-i="activity"></svg><p style="margin:0"><b>The bot starts watching ${insts().length} markets</b><span>It looks for breakouts each time a 4-hour candle closes. Quiet stretches are normal.</span></p></div>
+   <div><svg class="i" data-i="activity"></svg><p style="margin:0"><b>The bot starts watching ${trading().length} markets</b><span>It looks for breakouts each time a 4-hour candle closes. Quiet stretches are normal.</span></p></div>
    <div><svg class="i" data-i="sparkles" ></svg><p style="margin:0"><b>AI helper: ${WZ.key ? "on, in advise mode" : (S.cfg.ai.has_api_key ? "already connected" : "off for now")}</b><span>${WZ.key || S.cfg.ai.has_api_key ? "It rates trades but never blocks them." : "You can add a key any time from the AI helper page."}</span></p></div></div>
    <p class="note">After you press start I will offer a one-minute tour of the screen.</p>`;
 }
@@ -106,11 +106,11 @@ function wzBind() {
     q("#wzRisk").onclick = ev => { const b = ev.target.closest("button"); if (b) { WZ.risk = +b.dataset.r; upd(); } };
   }
   const prov = q("#wzProv"); if (prov) {
-    prov.onclick = ev => { const b = ev.target.closest("button"); if (b) { WZ.provider = b.dataset.p; WZ.key = q("#wzKey").value; wzDraw(false); } };
-    q("#wzKey").oninput = ev => { WZ.key = ev.target.value.trim(); q("#wzTest").disabled = !WZ.key; };
-    q("#wzTest").onclick = guard(async () => {
+    prov.onclick = ev => { const b = ev.target.closest("button"); if (b) { WZ.key = q("#wzKey") ? q("#wzKey").value : ""; WZ.provider = b.dataset.p; wzDraw(false); } };
+    if (q("#wzKey")) q("#wzKey").oninput = ev => { WZ.key = ev.target.value.trim(); q("#wzTest").disabled = !WZ.key; };
+    if (q("#wzTest")) q("#wzTest").onclick = guard(async () => {
       $("#wzTestOut").innerHTML = '<span class="spin"></span>testing (about 25 tokens)';
-      const r = await api("/api/ai/test", { provider: WZ.provider, base_url: S.presets[WZ.provider][0], model: S.presets[WZ.provider][1], api_key: WZ.key }, true);
+      const r = await api("/api/ai/test", { provider: WZ.provider, base_url: PROV(WZ.provider).base_url, model: PROV(WZ.provider).model, api_key: WZ.key }, true);
       WZ.tested = r.ok ? '<span class="up">Key works</span>' : '<span class="down">' + esc(r.error) + "</span>"; $("#wzTestOut").innerHTML = WZ.tested;
     });
   }
@@ -119,10 +119,11 @@ function wzFinish() { return guard(async () => {
   const btn = $("#wzNext"); btn.disabled = true; btn.innerHTML = '<span class="spin"></span>Starting';
   if (WZ.risk !== S.cfg.risk.per_trade_pct) await api("/api/config", { risk: { per_trade_pct: WZ.risk } }, true);
   if (S.engine.mode !== "live" && WZ.amt !== S.engine.start_equity) await api("/api/account", { amount: WZ.amt }, true);
-  if (WZ.key) await api("/api/config", { ai: { mode: "advise", provider: WZ.provider, base_url: S.presets[WZ.provider][0], model: S.presets[WZ.provider][1], api_key: WZ.key } }, true);
+  if (WZ.key && WZ.provider !== "__more") await api("/api/config", { ai: { mode: "advise", provider: WZ.provider, base_url: PROV(WZ.provider).base_url, model: PROV(WZ.provider).model, api_key: WZ.key } }, true);
   await api("/api/config", { ui: { onboarded: true } }, true);
   try { await api("/api/engine", { action: "start" }, true); } catch (e) { }
   sheetLock = false; closeSheet(); await refresh(); toast("The bot is running in practice mode.", "win", "You're all set");
+  if (WZ.provider === "__more") { setTimeout(() => openAI(), 600); return; }
   setTimeout(async () => { if (await confirmSheet("Take the 1-minute tour?", "I will point at each important part of the screen and explain it in plain English.", "Show me around", false)) startTour(0); else api("/api/config", { ui: { tour_done: true } }, true); }, 700);
 })(); }
 
@@ -136,7 +137,9 @@ const TOUR = [
   { page: "trade", sel: "#chartBox", t: "The market chart", b: "Each bar is one 4-hour <b>candle</b>: green if the price rose, red if it fell. The blue lines are the recent high and low the bot watches. When price breaks through, the bot trades. Arrows show its trades." },
   { page: "trade", sel: "#wl", t: "Your markets", b: "These are the markets the bot watches. The small line is the recent price path. A glowing dot means the bot is holding a trade there. Click any market to open its chart." },
   { page: "trade", sel: "#tStatus", t: "What the bot is thinking", b: "This sentence tells you in plain English what the bot is doing for the market you are looking at, and when the next 4-hour candle closes." },
-  { page: "ai", sel: "#aiMode", t: "The AI helper", b: "Optional. It reads a short briefing on each trade signal and rates the odds. In <b>Advise</b> mode it only gives an opinion and never blocks a trade. A hard spending cap protects your wallet." },
+  { page: "portfolio", sel: "#hMarkets", t: "My markets", b: "Everything you follow lives here. Press the <b>star</b> to pin a favorite to the top, the tag to let the bot trade it (or just watch), and <b>Add market</b> to search thousands of stocks, ETFs, crypto, forex and commodities." },
+  { page: "portfolio", sel: "#aiChip", t: "Connect an AI", b: "This is where the API key goes. Pick from 15 providers (DeepSeek, OpenAI, Claude, Gemini, Grok, local models and more), paste a key and press Save. It powers day trading and chat, and has hard spending caps." },
+  { page: "trader", sel: "#dToggle", t: "Quick day trading", b: "Switch on the <b>AI day trader</b> for 15-minute trades. Watch its live thoughts as it scans, decides and trades, and ask it questions in the chat. It runs on practice money and is unproven, so start small." },
   { page: "portfolio", sel: "#killBtn", t: "The emergency button", b: "If you ever want everything closed immediately, press this. It closes all positions and halts trading until you resume it in Settings." },
   { page: "help", sel: null, t: "You're ready", b: "Leave the bot running and check <b>Home</b> once a day. The bot only trades on strong breakouts, so quiet days are normal. The <b>Help</b> page has a glossary and answers to common questions. Replay this tour from there any time." }];
 let TR = null;
@@ -176,6 +179,9 @@ function renderHelp() {
   ${d("Reading the Home page", `<ul><li><b>Total value</b>: what your account is worth now, with profit since you started.</li><li><b>Sentinel insight</b>: a plain-English summary of what the bot is doing.</li><li><b>Profit, Today, Open trades, Win rate</b>: the numbers that matter most.</li><li><b>Safety systems</b>: how close you are to the daily loss limit and the emergency brake. Green is calm.</li><li><b>Open trades</b>: positions the bot holds right now.</li></ul>`)}
   ${d("Reading the Markets page", `<p>The chart shows 4-hour <b>candles</b> (green = price rose, red = price fell). Thin blue lines are the breakout levels the bot watches. Arrows mark the bot's buys and sells, and a dashed red line is the safety stop of an open trade. The list on the right shows every market; click one to switch. The sentence above the chart says what the bot is doing there.</p>`)}
   ${d("Keeping your money safe", `<ul><li><b>Practice mode</b> uses fake money by default.</li><li>Every trade has a <b>safety stop</b>.</li><li>A <b>daily loss limit</b> (3% by default) pauses new trades until tomorrow.</li><li>An <b>emergency brake</b> (20% drawdown) closes everything and halts the bot.</li><li>The red button at the top closes all positions instantly.</li><li>Hard caps limit trade size, number of trades and AI spending.</li></ul>`)}
+  ${d("Adding markets and favorites", `<p>Press <b>+ Add market</b> on Home or Markets and search anything: stocks (Apple, Tesla...), ETFs, crypto perpetuals, forex pairs, gold, oil, indices. Press the <b>star</b> to pin a market to the top of your home screen. Each market has a tag: <b>Bot trades</b> (the bot may trade it) or <b>Watching</b> (price only). Press the &#10005; to remove one. Stocks are long-only (no shorting) and trade during market hours.</p>`)}
+  ${d("Timeframes and speed", `<p>The chart has a timeframe switcher (1m to 1 day) for looking around. The <b>swing bot</b> trades on one timeframe, set in Settings (Pro). Faster is not better here: with real trading fees, our backtests found <b>only the 4-hour setting profitable</b>; 5 minute, 15 minute and 1 hour lost money. For quick trades use the <b>Trader</b> page's AI day trader instead, which is selective rather than constant.</p>`)}
+  ${d("Day trading and chat (the Trader page)", `<p>The AI day trader scans your markets every 15 minutes. A rule-based scanner flags setups (breakouts, extreme RSI, volume surges); the AI then decides long, short or flat with a stop and target. Every step shows in <b>Live thoughts</b>. The <b>chat</b> lets you ask why it did something or what it is watching; it is read-only and cannot place trades. It needs an AI connection, uses practice money, and is <b>unproven</b>: check the results before trusting it.</p>`)}
   ${d("The AI helper", `<p>When a trade signal passes all safety checks, the AI reads a short briefing (trend, volatility, funding rate, open interest, how crowded the trade is) and rates the odds of follow-through. In <b>Advise</b> mode it only gives an opinion. We tested blocking trades on its opinion over 6,800 past signals and it did <b>not</b> improve results, so it never blocks by default. A live scorecard on the AI page (Pro mode) shows whether its ratings turn out to be useful. It costs about 0.05 cents per trade signal, with hard daily and lifetime caps.</p>`)}
   ${d("Practice vs. real money", `<p>Sentinel starts in practice mode. For exchange-style practice, create a free Bybit account, switch it to <b>Demo Trading</b>, make an API key (trading allowed, withdrawals NOT allowed) and enter it in Settings. Only consider real money after weeks of practice, with an amount you can afford to lose. The exchange connections have never been run against a real account.</p>`)}
   ${d("Honest expectations", `<p>Over 5 years of past data, the default setup earned a modest return (about 8% a year at 0.5% risk, with a worst dip near 20%). That is not a get-rich-quick machine and past results do not predict the future. Expect losing streaks. This is not financial advice.</p>`)}

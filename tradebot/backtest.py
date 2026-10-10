@@ -8,6 +8,7 @@ MARKET_COSTS = {  # per side, fraction of notional
     "crypto": dict(fee=0.0010, slip=0.0003, funding_8h=0.0, max_lev=1.0),
     "futures": dict(fee=0.0005, slip=0.0003, funding_8h=0.0001, max_lev=3.0),
     "forex": dict(fee=0.0000, slip=0.00008, funding_8h=0.0, max_lev=10.0),
+    "stock": dict(fee=0.0000, slip=0.0003, funding_8h=0.0, max_lev=2.0),      # commission-free brokers; stocks/ETFs/indices/commodities via Yahoo, long-only
 }
 
 
@@ -16,7 +17,7 @@ def run(candles, strat, params, market="futures", tf="4h", equity0=10000.0, risk
     mc = MARKET_COSTS[market]
     lev = lev or mc["max_lev"]
     if allow_short is None:
-        allow_short = market != "crypto"
+        allow_short = market not in ("crypto", "stock")
     fee = mc["fee"] + mc["slip"]
     fund = mc["funding_8h"] * TF_HOURS[tf] / 8.0
     n = len(candles)

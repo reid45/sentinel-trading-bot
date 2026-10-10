@@ -25,11 +25,14 @@ def _binance(base, path, symbol, tf, start_ms, end_ms, limit):
     return out
 
 def _yahoo(symbol, tf, years):
-    iv = {"1h": "1h", "1d": "1d", "15m": "15m", "5m": "5m"}.get(tf)
+    iv = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "1d": "1d"}.get(tf)
     if tf == "4h": iv = "1h"
-    rng = "729d" if iv in ("1h",) else ("60d" if iv in ("15m", "5m") else "%dy" % years)
+    rng = {"1m": "7d", "5m": "60d", "15m": "60d", "1h": "729d"}.get(iv, "%dy" % years)
     d = _get("https://query1.finance.yahoo.com/v8/finance/chart/%s?interval=%s&range=%s" % (urllib.parse.quote(symbol), iv, rng))
-    r = d["chart"]["result"][0]; q = r["indicators"]["quote"][0]
+    res = (d.get("chart") or {}).get("result")
+    if not res or "timestamp" not in res[0]:
+        raise ValueError("no price data for %s" % symbol)
+    r = res[0]; q = r["indicators"]["quote"][0]
     rows = []
     for i, t in enumerate(r["timestamp"]):
         if None in (q["open"][i], q["high"][i], q["low"][i], q["close"][i]): continue
@@ -57,7 +60,7 @@ def fetch(market, symbol, tf="4h", years=4, use_cache=True, max_age_s=3600):
     end = int(time.time() * 1000); start = end - years * 365 * 86400000
     if market == "crypto": rows = _binance("https://data-api.binance.vision", "/api/v3/klines", symbol, tf, start, end, 1000)
     elif market == "futures": rows = _binance("https://fapi.binance.com", "/fapi/v1/klines", symbol, tf, start, end, 1500)
-    elif market == "forex":
+    elif market in ("forex", "stock"):
         rows = _yahoo(symbol, tf, years)
         if tf == "4h": rows = _resample(rows, TF_MS["4h"])
     else: raise ValueError(market)
@@ -81,7 +84,7 @@ def fetch_recent(market, symbol, tf, limit=500, forming=False):
         rows = _binance("https://data-api.binance.vision", "/api/v3/klines", symbol, tf, end - limit * TF_MS[tf], end, 1000)
     elif market == "futures":
         rows = _binance("https://fapi.binance.com", "/fapi/v1/klines", symbol, tf, end - limit * TF_MS[tf], end, 1500)
-    elif market == "forex":
+    elif market in ("forex", "stock"):
         rows = _yahoo(symbol, tf, 1)
         if tf == "4h":
             rows = _resample(rows, TF_MS["4h"])

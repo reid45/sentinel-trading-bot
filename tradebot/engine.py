@@ -2,7 +2,7 @@
 Paper mode simulates fills (same costs as the backtester). Live mode (futures only) routes through brokers.BinanceFutures."""
 import math, threading, time, traceback
 from concurrent.futures import ThreadPoolExecutor
-from . import data, analyst
+from . import data, analyst, daytrader
 from .backtest import MARKET_COSTS, TF_HOURS
 from .strategies import STRATEGIES
 from . import indicators as I
@@ -24,6 +24,7 @@ class Engine:
         self.last_cycle = 0
         self.last_snapshot = 0
         self._broker = None
+        self.day_stats = dict(scans=0, candidates=0, trades=0, last=0)
 
     # ------------------------------------------------------------------ lifecycle
     def start(self):
@@ -47,7 +48,8 @@ class Engine:
                 self.cycle()
             except Exception:
                 self.s.event("error", "cycle crashed: " + traceback.format_exc().splitlines()[-1])
-            for _ in range(int(self.s.cfg["poll_seconds"])):
+            fast = min([data.TF_MS[i["tf"]] for i in self.s.cfg["instruments"]] or [14400000]) / 1000
+            for _ in range(int(max(3, min(self.s.cfg["poll_seconds"], fast / 10)))):      # faster timeframes are polled faster
                 if not self.running:
                     return
                 time.sleep(1)
@@ -59,7 +61,7 @@ class Engine:
     @staticmethod
     def upnl(p):
         """Unrealized P&L after funding and the cost of closing right now (fee + slippage)."""
-        market = p["inst"].split(":")[0]
+        market = p.get("market") or p["inst"].split(":")[0]
         mc = MARKET_COSTS.get(market, MARKET_COSTS["futures"])
         mark = p.get("mark", p["entry"])
         return p["side"] * (mark - p["entry"]) * p["qty"] - p.get("fund", 0) - mark * p["qty"] * (mc["fee"] + mc["slip"])
@@ -89,11 +91,13 @@ class Engine:
                 self._process(inst, st)
             except Exception as e:
                 st["error"] = str(e)[:120]
-        todo = [i for i in cfg["instruments"] if i["enabled"]]
+        todo = list(cfg["instruments"])          # watch-only markets are still polled for prices; entries are gated in _on_bar
         for i in todo:
             self.status.setdefault(i["id"], {"last_ts": None, "price": None, "signal": 0, "error": None, "price_t": 0})
         with ThreadPoolExecutor(6) as ex:      # network-bound: poll all markets at once
             list(ex.map(one, todo))
+        if cfg["day"].get("enabled"):
+            self._day_cycle()
         self._risk_guards()
         self.last_cycle = t
         if t - self.last_snapshot >= 60000:
@@ -111,6 +115,13 @@ class Engine:
                 if pos:
                     pos["mark"] = st["price"]
                     self.s.set_position(inst["id"], pos)
+                    px_, sd_ = st["price"], pos["side"]
+                    if (sd_ == 1 and px_ <= pos["stop"]) or (sd_ == -1 and px_ >= pos["stop"]):      # stops trigger on live price, not only at candle close
+                        self._close(inst, pos, px_, "stop", exchange_side=True)
+                        pos = None
+                    elif pos.get("tp") and ((sd_ == 1 and px_ >= pos["tp"]) or (sd_ == -1 and px_ <= pos["tp"])):
+                        self._close(inst, pos, px_, "target", exchange_side=True)
+                        pos = None
             except Exception as e:
                 st["error"] = "price: " + str(e)[:80]
         due = st["last_ts"] is None or t >= st["last_ts"] + 2 * tfms + 4000
@@ -179,10 +190,13 @@ class Engine:
             self._close(inst, pos, c, "reverse")
             pos = None
         if pos is None:
-            if sig == -1 and inst["market"] == "crypto":
+            if not inst.get("enabled", True):
+                return                          # watch-only: never open a trade
+            if sig == -1 and inst["market"] in ("crypto", "stock"):
                 return
             ok, msg = self.open(inst, sig, c, d, source="engine", hist=hist)
             self.s.event("trade" if ok else "skip", "%s %s: %s" % (inst["symbol"], "LONG" if sig == 1 else "SHORT", msg))
+            self.s.think(inst, "decision" if ok else "skip", "%s signal on %s %s: %s" % ("Long" if sig == 1 else "Short", inst["symbol"], inst["tf"], msg))
 
     # ------------------------------------------------------------------ orders
     def open(self, inst, *a, **k):
@@ -246,10 +260,11 @@ class Engine:
                 px = b.open(inst["symbol"], side, qty, stop_px) or px
             except Exception as e:
                 return False, "broker error: " + str(e)[:100]
-        pos = dict(inst=inst["id"], symbol=inst["symbol"], side=side, qty=qty, entry=px, stop=stop_px, tp=tp, d=d,
+        pos = dict(inst=inst["id"], symbol=inst["symbol"], market=inst["market"], side=side, qty=qty, entry=px, stop=stop_px, tp=tp, d=d,
                    t_open=now_ms(), fee_in=px * qty * fee, fund=0.0, source=source, mark=ref_price, mode=cfg["mode"], ai_p=ai_p)
         self.s.put("cash", self.cash() - pos["fee_in"])
         self.s.set_position(inst["id"], pos)
+        self.s.think(inst, "open", "Opened %s %s at %.6g, stop %.6g%s, risking $%.2f" % ("LONG" if side == 1 else "SHORT", inst["symbol"], px, stop_px, (", target %.6g" % tp) if tp else "", qty * d))
         return True, "opened %.5g @ %.6g stop %.6g (risk $%.2f)%s" % (qty, px, stop_px, qty * d, ai_note)
 
     def _close(self, inst, *a, **k):
@@ -274,6 +289,7 @@ class Engine:
                          source=pos.get("source"), mode=pos.get("mode"), ai_p=pos.get("ai_p"))
         self.s.set_position(inst["id"], None)
         self.s.event("close", "%s closed (%s) %+.2f" % (inst["symbol"], reason, pnl))
+        self.s.think(inst, "close", "Closed %s (%s): %s" % (inst["symbol"], reason, ("+" if pnl >= 0 else "-") + "$%.2f" % abs(pnl)))
 
     def _sync_stop(self, inst, pos):
         if self.live() and self.broker() and inst["market"] == "futures":
@@ -284,12 +300,112 @@ class Engine:
 
     def close_by_id(self, inst_id, reason="manual"):
         pos = self.s.positions().get(inst_id)
-        inst = next((i for i in self.s.cfg["instruments"] if i["id"] == inst_id), None)
+        inst = self._inst_for(inst_id)
         if not pos or not inst:
             return False
         px = (self.status.get(inst_id) or {}).get("price") or pos.get("mark") or pos["entry"]
         self._close(inst, pos, px, reason)
         return True
+
+    def _inst_for(self, inst_id):
+        """Config instrument, or the pseudo-instrument a day-trading position lives under ('day:' + base id)."""
+        base = inst_id[4:] if inst_id.startswith("day:") else inst_id
+        b = next((i for i in self.s.cfg["instruments"] if i["id"] == base), None)
+        if b and inst_id.startswith("day:"):
+            return dict(b, id=inst_id, tf=self.s.cfg["day"]["tf"], strategy="aiday", params={"trail": 1}, enabled=True)
+        return b
+
+    # ------------------------------------------------------------------ AI day trading
+    def _day_cycle(self):
+        d = self.s.cfg["day"]
+        picks = sorted([i for i in self.s.cfg["instruments"] if i.get("enabled", True)], key=lambda i: not i.get("fav"))[:int(d.get("markets", 6))]
+        for pid, pos in list(self.s.positions().items()):             # live price checks for open day trades every cycle
+            if pid.startswith("day:"):
+                self._day_price_check(pid, pos)
+        with ThreadPoolExecutor(4) as ex:
+            list(ex.map(lambda i: self._safe(self._day_one, i, d), picks))
+
+    def _safe(self, fn, *a):
+        try:
+            fn(*a)
+        except Exception as e:
+            self.s.event("error", "day trading: " + str(e)[:100])
+
+    def _day_price_check(self, pid, pos):
+        inst = self._inst_for(pid)
+        if not inst:
+            return
+        try:
+            px_ = self.price(inst["market"], inst["symbol"])
+        except Exception:
+            return
+        pos["mark"] = px_
+        self.s.set_position(pid, pos)
+        sd = pos["side"]
+        if (sd == 1 and px_ <= pos["stop"]) or (sd == -1 and px_ >= pos["stop"]):
+            self._close(inst, pos, px_, "stop", exchange_side=True)
+        elif pos.get("tp") and ((sd == 1 and px_ >= pos["tp"]) or (sd == -1 and px_ <= pos["tp"])):
+            self._close(inst, pos, px_, "target", exchange_side=True)
+
+    def _day_one(self, base, d):
+        tf, tfms, now = d["tf"], data.TF_MS[d["tf"]], now_ms()
+        did = "day:" + base["id"]
+        last = self.s.get("day_ts:" + did)
+        if last is not None and now < last + 2 * tfms + 4000:
+            return
+        hist = self.fetch(base["market"], base["symbol"], tf, 300)
+        if len(hist) < 120 or (last is not None and hist[-1][0] <= last):
+            return
+        self.s.put("day_ts:" + did, hist[-1][0])
+        inst = self._inst_for(did)
+        self.day_stats["scans"] += 1
+        self.day_stats["last"] = now
+        pos = self.s.positions().get(did)
+        c = hist[-1]
+        if pos:
+            pos["mark"] = c[4]
+            held = (c[0] - pos["t_open"]) / tfms
+            new = max(pos["stop"], c[2] - pos["d"]) if pos["side"] == 1 else min(pos["stop"], c[3] + pos["d"])
+            if new != pos["stop"]:
+                pos["stop"] = new
+                self.s.think(inst, "manage", "Trailing %s stop to %.6g" % (inst["symbol"], new))
+                self._sync_stop(inst, pos)
+            if held >= d.get("max_hold_bars", 24):
+                self._close(inst, pos, c[4], "time")
+            else:
+                self.s.set_position(did, pos)
+            return
+        reasons = daytrader.candidates(hist)
+        if not reasons:
+            return
+        self.day_stats["candidates"] += 1
+        self.s.think(inst, "candidate", "%s: %s" % (inst["symbol"], "; ".join(reasons)))
+        if self.halted() or self.s.get("daily_block"):
+            return self.s.think(inst, "skip", "Not trading: safety limit active")
+        poss = self.s.positions()
+        dec = daytrader.decide(self.s, inst, hist, self._btc_tf(inst, tf), poss, self.equity(), self.fetch, reasons, tf)
+        self.s.think(inst, "decision", "%s %s%% - %s%s" % (dec["action"].upper(), int(dec["conf"]), dec["why"] or "no reason given", " ($%.4f, %d tokens)" % (dec["usd"], dec["tokens"]) if dec["source"] == "api" else ""))
+        if dec["action"] == "flat" or dec["conf"] < d.get("min_conf", 60):
+            return
+        side = 1 if dec["action"] == "long" else -1
+        if side == -1 and inst["market"] in ("crypto", "stock"):
+            return self.s.think(inst, "skip", "Shorting isn't available for %s" % inst["symbol"])
+        atr = daytrader.stats(hist)["atr"]
+        price = c[4]
+        ok, msg = self.open(inst, side, price, dec["stop_atr"] * atr, source="day", tp=price + side * dec["target_atr"] * atr)
+        if ok:
+            self.day_stats["trades"] += 1
+            self.s.event("trade", "DAY %s %s: %s" % (inst["symbol"], "LONG" if side == 1 else "SHORT", msg))
+        else:
+            self.s.think(inst, "skip", "Risk check: " + msg)
+
+    def _btc_tf(self, inst, tf):
+        if inst["symbol"].startswith("BTC") or inst["market"] != "futures":
+            return None
+        try:
+            return self.fetch("futures", "BTCUSDT", tf, 120)
+        except Exception:
+            return None
 
     def flatten_all(self, reason="kill switch"):
         n = 0
@@ -364,7 +480,7 @@ class Engine:
         if was:
             self.start()
 
-    def _btc(self, inst):
+    def _btc(self, inst):  # noqa: swing-mode BTC regime
         """BTC 4h candles for the market-regime features (cached 5 min). None for BTC itself or on failure."""
         if inst["symbol"].startswith("BTC") or inst["market"] != "futures":
             return None
@@ -422,4 +538,5 @@ class Engine:
             trades=len(trades), win_rate=len(wins) / len(trades) * 100 if trades else 0,
             profit_factor=(sum(t["pnl"] for t in wins) / -sum(t["pnl"] for t in trades if t["pnl"] <= 0)) if any(t["pnl"] <= 0 for t in trades) and sum(t["pnl"] for t in trades if t["pnl"] <= 0) < 0 else None,
             positions=[dict(p, id=k, upnl=self.upnl(p), risk_now=abs(p.get("mark", p["entry"]) - p["stop"]) * p["qty"]) for k, p in poss.items()],
-            status={k: {a: b for a, b in v.items() if a != "spark"} for k, v in self.status.items()}, last_cycle=self.last_cycle, now=now_ms())
+            status={k: {a: b for a, b in v.items() if a != "spark"} for k, v in self.status.items()}, last_cycle=self.last_cycle, now=now_ms(),
+            day=dict(self.day_stats, enabled=bool(self.s.cfg["day"]["enabled"]), tf=self.s.cfg["day"]["tf"]))
