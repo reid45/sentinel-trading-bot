@@ -141,3 +141,30 @@ textarea{font:12.5px var(--mono);min-height:70px;resize:vertical}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 
 .cmd,.cmd #cl{overflow-x:hidden}.sheet:has(.cmd){padding:10px;overflow:hidden}
+
+/* ---------- beginner layer: terms, checklist, wizard, tour, help */
+.term{border-bottom:1px dotted var(--tx3);cursor:help}
+.start{display:grid;gap:10px}.start .it{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:12px;background:var(--hover);border:1px solid var(--line);transition:border-color var(--d2),background var(--d2)}
+.start .ck{width:22px;height:22px;border-radius:50%;border:1.5px solid var(--line2);display:grid;place-items:center;flex:none;transition:all var(--d3) var(--spring)}
+.start .it.done{opacity:.7}.start .it.done .ck{background:var(--up);border-color:var(--up);transform:scale(1.05)}.start .it.done .ck::after{content:"";width:9px;height:5px;border-left:2px solid #07110d;border-bottom:2px solid #07110d;transform:rotate(-45deg) translate(1px,-1px)}
+.start .it b{font-weight:600}.start .it .sub{margin-top:1px}.start .it .btn{margin-left:auto}
+.wiz{width:min(680px,94vw);padding:0;overflow:hidden}.wiz .body{padding:28px 30px 8px;min-height:340px}.wiz .foot2{display:flex;align-items:center;gap:10px;padding:16px 30px 22px}
+.wiz h2{font-size:26px;letter-spacing:-.03em;margin:6px 0 8px;font-weight:650}.wiz .lead{color:var(--tx2);font-size:15px;line-height:1.6;margin:0 0 18px}
+.wiz .step{animation:stepin .5s var(--ease) both}@keyframes stepin{from{opacity:0;transform:translateX(24px);filter:blur(5px)}}
+.wiz .step.back{animation-name:stepinb}@keyframes stepinb{from{opacity:0;transform:translateX(-24px);filter:blur(5px)}}
+.dots{display:flex;gap:6px}.dots i{width:7px;height:7px;border-radius:7px;background:var(--line2);transition:all var(--d3) var(--spring)}.dots i.on{width:22px;background:var(--acc)}
+.feat{display:grid;gap:10px;margin:16px 0}.feat div{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border-radius:13px;background:var(--hover);border:1px solid var(--line)}.feat svg{color:var(--acc);margin-top:1px}
+.feat b{display:block;font-weight:600}.feat span{color:var(--tx2);font-size:13px}
+.choice{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}.choice button{text-align:left;padding:12px 14px;border-radius:13px;border:1px solid var(--line);background:var(--hover);cursor:pointer;transition:all var(--d2) var(--spring)}
+.choice button b{display:block;font-weight:600}.choice button span{color:var(--tx3);font-size:12px}.choice button:hover{transform:translateY(-2px)}.choice button.on{border-color:var(--acc);background:rgba(124,156,255,.1)}
+#tourSpot{position:fixed;z-index:1200;border-radius:14px;pointer-events:none;box-shadow:0 0 0 9999px rgba(3,4,7,.76),0 0 0 2px rgba(124,156,255,.85),0 0 30px 4px rgba(124,156,255,.35);transition:top .55s var(--ease),left .55s var(--ease),width .55s var(--ease),height .55s var(--ease),opacity .3s}
+#tourCard{position:fixed;z-index:1210;width:min(350px,92vw);padding:18px 20px;border-radius:18px;background:#141821;border:1px solid var(--line2);box-shadow:0 30px 70px -10px rgba(0,0,0,.8);transition:top .55s var(--ease),left .55s var(--ease),opacity .25s}
+#tourCard h4{margin:0 0 6px;font-size:16px;letter-spacing:-.01em}#tourCard p{margin:0 0 14px;color:var(--tx2);line-height:1.55}#tourCard .row{justify-content:space-between}
+#tourCard .swap{animation:stepin .45s var(--ease) both}
+.help{display:grid;gap:10px;max-width:860px}.help details{border:1px solid var(--line);border-radius:14px;background:var(--hover);overflow:hidden}.help summary{padding:14px 18px;cursor:pointer;font-weight:600;list-style:none;display:flex;justify-content:space-between;align-items:center}
+.help summary::-webkit-details-marker{display:none}.help summary::after{content:"+";color:var(--tx3);font-size:18px;transition:transform var(--d2) var(--spring)}.help details[open] summary::after{transform:rotate(45deg)}
+.help .c{padding:0 18px 16px;color:var(--tx2);line-height:1.65}.help .c b{color:var(--tx)}.help .c li{margin:4px 0}.help dl{display:grid;grid-template-columns:130px 1fr;gap:8px 16px;margin:0}.help dt{color:var(--tx);font-weight:600}.help dd{margin:0}
+.simple .hide-simple{display:none!important}
+
+.home-top{grid-template-columns:minmax(0,2fr) minmax(280px,1fr)}
+@media(max-width:900px){.home-top{grid-template-columns:minmax(0,1fr)}.big{font-size:34px}.start .it{flex-wrap:wrap}.wiz .body{padding:22px 20px 6px}.wiz .foot2{padding:14px 20px 18px;flex-wrap:wrap}}

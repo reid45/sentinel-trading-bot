@@ -3,7 +3,8 @@
 const $ = (s, r = document) => r.querySelector(s), $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const LS = { get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch (e) { return d; } }, set(k, v) { try { localStorage.setItem(k, v); } catch (e) { } } };
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
-let S = null, page = "trade", sel = null, simple = LS.get("simple", "1") === "1", soundOn = LS.get("sound", "0") === "1", lastEv = null;
+let sheetLock = false;
+let S = null, page = "portfolio", sel = null, simple = LS.get("simple", "1") === "1", soundOn = LS.get("sound", "0") === "1", lastEv = null;
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const money = (v, d = 2) => (v < 0 ? "-" : "") + "$" + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
 const sm = (v, d = 2) => (v >= 0 ? "+" : "-") + money(Math.abs(v), d).replace("-", "");
@@ -21,12 +22,15 @@ const insts = () => S.cfg.instruments.filter(i => i.enabled);
 /* ---------- dom helpers */
 function icons(root = document) { $$("svg[data-i]", root).forEach(s => { if (s.dataset.done) return; s.setAttribute("viewBox", "0 0 24 24"); s.innerHTML = (window.ICONS || {})[s.dataset.i] || ""; s.dataset.done = 1; }); }
 function setHTML(el, h) { if (el._h === h) return false; el._h = h; el.innerHTML = h; icons(el); return true; }
-function swap(fn) { if (document.startViewTransition && !reduced) document.startViewTransition(fn); else fn(); }
+function swap(fn) {
+  if (document.startViewTransition && !reduced) { const t = document.startViewTransition(fn); [t.ready, t.finished, t.updateCallbackDone].forEach(p => p && p.catch(() => { })); }   // a newer click may abort the previous transition: that is fine
+  else fn();
+}
 const bar = { n: 0, start() { this.n++; const b = $("#bar"); b.style.opacity = 1; b.style.width = "35%"; }, done() { if (--this.n > 0) return; const b = $("#bar"); b.style.width = "100%"; setTimeout(() => { b.style.opacity = 0; b.style.width = "0"; }, 350); } };
 async function api(path, body, quiet) {
   if (!quiet) bar.start();
   try {
-    const r = await fetch(path, body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const r = await fetch(path, body === undefined ? { cache: "no-store" } : { method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || r.statusText);
     return j;
@@ -67,7 +71,7 @@ function openSheet(html, trigger) {
   const s = sh.getBoundingClientRect(); sh.style.setProperty("--ox", (r.left + r.width / 2 - s.left) + "px"); sh.style.setProperty("--oy", (r.top + r.height / 2 - s.top) + "px");
   return sh;
 }
-function closeSheet() { if (!sheetOpen) return; sheetOpen = false; const sc = $("#scrim"); sc.classList.add("closing"); setTimeout(() => { sc.classList.remove("on", "closing"); $("#sheet").className = "sheet"; $("#sheet").innerHTML = ""; }, 230); }
+function closeSheet() { if (!sheetOpen || sheetLock) return; sheetOpen = false; const sc = $("#scrim"); sc.classList.add("closing"); setTimeout(() => { sc.classList.remove("on", "closing"); $("#sheet").className = "sheet"; $("#sheet").innerHTML = ""; }, 230); }
 $("#scrim").onmousedown = e => { if (e.target.id === "scrim") closeSheet(); };
 function confirmSheet(title, body, ok, danger, trigger) {
   return new Promise(res => {
@@ -147,7 +151,7 @@ async function refresh() {
   if (!sel || !S.cfg.instruments.find(i => i.id === sel)) sel = (ins[0] || {}).id;
   $("#engLed").className = "led " + (e.halted ? "bad" : e.running ? "on" : "warn"); $("#railLed").className = $("#engLed").className;
   $("#engTxt").textContent = e.halted ? "Halted" : e.running ? "Live · " + ins.length + " markets" : "Paused";
-  $("#modeChip").textContent = e.mode === "live" ? "Exchange" : "Paper"; $("#modeChip").style.color = e.mode === "live" ? "var(--down)" : "";
+  $("#modeChip").textContent = e.mode === "live" ? "Exchange mode" : "Practice mode"; $("#modeChip").style.color = e.mode === "live" ? "var(--down)" : "";
   roll($("#acctTxt"), money(e.equity)); $("#engSeg").set(e.running ? "run" : "pause");
   celebrate(S.events); liveTick();
   if (page === "trade") renderTrade(); else if (page === "portfolio") renderPortfolio();
@@ -188,7 +192,7 @@ function renderTrade() {
   $("#tStrat").textContent = { donchian: "Breakout strategy", emacross: "EMA cross strategy", pullback: "Pullback strategy" }[i.strategy] || i.strategy;
   const nb = st.next_bar ? st.next_bar - e.now : null; let msg;
   if (st.error) msg = `<svg class="i" data-i="shield-alert"></svg><span>Data hiccup on this market: <b>${esc(st.error)}</b>. Retrying automatically.</span>`;
-  else if (pos) msg = `<svg class="i" data-i="${pos.side > 0 ? "trending-up" : "trending-down"}"></svg><span>Holding a <b>${pos.side > 0 ? "long" : "short"}</b> position, <b class="${cls(pos.upnl)}">${sm(pos.upnl)}</b> so far. Safety stop at <b>${px(pos.stop)}</b>.</span>`;
+  else if (pos) msg = `<svg class="i" data-i="${pos.side > 0 ? "trending-up" : "trending-down"}"></svg><span>Holding a <b>${sideWord(pos.side)}</b> position, <b class="${cls(pos.upnl)}">${sm(pos.upnl)}</b> so far. Safety stop at <b>${px(pos.stop)}</b>.</span>`;
   else msg = `<svg class="i" data-i="activity"></svg><span>${st.signal ? "A signal just fired - I'm checking risk limits." : "Watching for a breakout."} Next 4-hour candle closes in <b>${nb == null ? "--" : dur(nb)}</b>.</span>`;
   setHTML($("#tStatus"), msg);
   const wl = ins.map(x => { const t = e.status[x.id] || {}, sp = sparks[x.id] || {}, up = (sp.c || 0) >= 0, hold = e.positions.some(p => p.id === x.id);
@@ -198,20 +202,21 @@ function renderTrade() {
 }
 function renderDock(force) {
   const e = S.engine; let h;
-  if (dock === "pos") h = e.positions.length ? `<table><tr><th>Market</th><th>Side</th><th>Size</th><th>Entry</th><th>Price</th><th>Stop</th><th>Profit now</th><th></th></tr>${e.positions.map(p => `<tr><td class="t"><b>${esc(p.symbol.replace("=X", ""))}</b></td><td><span class="pill ${p.side > 0 ? "up" : "down"}">${p.side > 0 ? "Long" : "Short"}</span></td><td>${(+p.qty).toPrecision(3)}</td><td>${px(p.entry)}</td><td>${px(p.mark)}</td><td>${px(p.stop)}</td><td class="${cls(p.upnl)}">${sm(p.upnl)}</td><td><button class="btn sm" data-close="${esc(p.id)}">Close</button></td></tr>`).join("")}</table>` : `<div class="empty">No open trades. I only enter on a confirmed breakout, so quiet stretches are normal.</div>`;
+  if (dock === "pos") h = e.positions.length ? `<table><tr><th>Market</th><th>Side</th><th>Size</th><th>Entry</th><th>Price</th><th>Stop</th><th>Profit now</th><th></th></tr>${e.positions.map(p => `<tr><td class="t"><b>${esc(p.symbol.replace("=X", ""))}</b></td><td>${sidePill(p.side)}</td><td>${(+p.qty).toPrecision(3)}</td><td>${px(p.entry)}</td><td>${px(p.mark)}</td><td>${px(p.stop)}</td><td class="${cls(p.upnl)}">${sm(p.upnl)}</td><td><button class="btn sm" data-close="${esc(p.id)}">Close</button></td></tr>`).join("")}</table>` : `<div class="empty">No open trades. I only enter on a confirmed breakout, so quiet stretches are normal.</div>`;
   else if (dock === "act") h = S.events.length ? `<table>${S.events.map(v => `<tr><td class="mono" style="color:var(--tx3)">${tm(v.t)}</td><td><span class="pill ${{ trade: "acc", close: "up", error: "down", skip: "", info: "" }[v.level] || ""}">${{ trade: "Opened", close: "Closed", error: "Alert", skip: "Skipped", info: "System" }[v.level] || v.level}</span></td><td class="t">${esc(v.msg)}</td></tr>`).join("")}</table>` : '<div class="empty">Nothing yet.</div>';
   else { if (force || Date.now() - dockH > 15000) { dockH = Date.now(); api("/api/trades?n=60", undefined, true).then(t => { dockData = t; if (dock === "his") renderDock(); }); } h = histTable(dockData); }
   if (setHTML($("#dockBody"), h)) $$("[data-close]", $("#dockBody")).forEach(b => b.onclick = guard(async () => { await api("/api/engine", { action: "close", inst: b.dataset.close }); refresh(); }));
 }
 let dockData = [];
 const REASON = { stop: "Stop hit", reverse: "Trend flipped", target: "Target hit", manual: "Closed by you", "kill switch": "Kill switch", tradingview: "TradingView" };
-function histTable(t) { return t.length ? `<table><tr><th>Closed</th><th>Market</th><th>Side</th><th>Entry</th><th>Exit</th><th>Result</th><th>Why</th></tr>${t.map(r => `<tr><td class="mono" style="color:var(--tx3)">${dt(r.t_close)}</td><td class="t"><b>${esc(r.symbol.replace("=X", ""))}</b></td><td><span class="pill ${r.side > 0 ? "up" : "down"}">${r.side > 0 ? "Long" : "Short"}</span></td><td>${px(r.entry)}</td><td>${px(r.exit)}</td><td class="${cls(r.pnl)}">${sm(r.pnl)}</td><td class="t">${esc(REASON[r.reason] || r.reason)}</td></tr>`).join("")}</table>` : '<div class="empty">No closed trades yet. Every trade is logged here.</div>'; }
+function histTable(t) { return t.length ? `<table><tr><th>Closed</th><th>Market</th><th>Side</th><th>Entry</th><th>Exit</th><th>Result</th><th>Why</th></tr>${t.map(r => `<tr><td class="mono" style="color:var(--tx3)">${dt(r.t_close)}</td><td class="t"><b>${esc(r.symbol.replace("=X", ""))}</b></td><td>${sidePill(r.side)}</td><td>${px(r.entry)}</td><td>${px(r.exit)}</td><td class="${cls(r.pnl)}">${sm(r.pnl)}</td><td class="t">${esc(REASON[r.reason] || r.reason)}</td></tr>`).join("")}</table>` : '<div class="empty">No closed trades yet. Every trade is logged here.</div>'; }
 
 /* ---------- PORTFOLIO page */
 const PF = { chart: null, series: null, range: "1d", eq: [] };
 function buildPortfolio() {
   $("#p-portfolio").innerHTML = `<div class="rise">
-   <div class="grid" style="grid-template-columns:minmax(0,2fr) minmax(280px,1fr)">
+   <div class="card" id="startCard" style="--i:0;margin-bottom:14px;display:none"></div>
+   <div class="grid home-top">
     <div class="card" style="--i:0"><div class="row" style="justify-content:space-between;align-items:flex-start"><div><div class="label">Total value <span class="q" data-tip="Everything the account is worth right now: cash plus open trades, after fees. This number is exact, not an estimate.">?</span></div><div class="big" id="pTotal">--</div><div class="row" style="margin-top:8px"><span class="pill" id="pSince"></span><span class="sub" id="pToday"></span></div></div>
      <div class="seg" id="pRange"><div class="thumb"></div><button data-v="1h">1H</button><button data-v="1d">1D</button><button data-v="1w">1W</button><button data-v="all">All</button></div></div><div id="eqBox" style="height:270px;margin-top:10px"></div></div>
     <div class="card" style="--i:1"><h3>Sentinel insight <svg class="i" data-i="sparkles" style="color:var(--acc2)"></svg></h3><div class="insight" id="insight"></div><div class="row" id="tags" style="margin-top:6px"></div></div>
@@ -232,7 +237,6 @@ function narrate() {
   t += "Today: **" + sm(e.day_pnl) + "**. ";
   if (e.daily_block) t += "**Daily loss limit reached**; new trades resume tomorrow. ";
   const bad = Object.values(e.status).filter(s => s.error).length; if (bad) t += bad + " market" + (bad > 1 ? "s have" : " has") + " a data hiccup; retrying. ";
-  if (ai.mode !== "off" && !ai.has_api_key && ai.provider !== "claude_cli") t += "AI is on but has no key yet. ";
   return t;
 }
 function kpi(l, v, s, c, tp) { return `<div class="card kpi"><div class="label">${l}${tp ? ` <span class="q" data-tip="${esc(tp)}">?</span>` : ""}</div><div class="mid ${c || ""}" style="margin-top:6px">${v}</div><div class="sub">${s}</div></div>`; }
@@ -242,17 +246,13 @@ function renderPortfolio() {
   const e = S.engine, r = S.cfg.risk, ps = e.positions, profit = e.equity - e.start_equity;
   roll($("#pTotal"), money(e.equity)); const sn = $("#pSince"); sn.textContent = sm(profit) + " (" + pct(e.total_return_pct) + ") since start"; sn.className = "pill " + (profit >= 0 ? "up" : "down");
   $("#pToday").textContent = "Today " + sm(e.day_pnl) + " (" + pct(e.day_pnl_pct) + ")";
-  words($("#insight"), narrate());
+  words($("#insight"), narrate()); renderStart();
   const nbs = Object.values(e.status).map(s => s.next_bar).filter(Boolean), nb = nbs.length ? Math.min(...nbs) - e.now : null;
   setHTML($("#tags"), `<span class="chip" data-tip="The most one losing trade can cost">Risk / trade ${money(e.equity * r.per_trade_pct / 100)}</span><span class="chip" data-tip="Next 4-hour candle close, when I look for new signals">Next candle ${nb == null ? "--" : dur(nb)}</span><span class="chip" data-tip="Off, Advise (rates signals) or Veto (can block)">AI ${S.cfg.ai.mode}</span>`);
-  setHTML($("#kpis"), kpi("Win rate", e.trades ? e.win_rate.toFixed(0) + "%" : "--", e.trades + " closed trades", "", "Share of closed trades that made money. Trend systems often win only 35-45% of the time, but winners are larger than losers.") +
-    kpi("Profit factor", e.profit_factor ? e.profit_factor.toFixed(2) : "--", e.profit_factor ? (e.profit_factor > 1 ? "winners outweigh losers" : "losers outweigh winners") : "needs closed trades", e.profit_factor ? cls(e.profit_factor - 1) : "", "Money won divided by money lost. Above 1 is profitable; 1.5+ is strong.") +
-    kpi("Open risk", money(e.open_risk), ps.length + " / " + r.max_positions + " trades open", "", "The most you'd lose if every open stop-loss hit right now.") +
-    kpi("Drawdown", e.drawdown_pct.toFixed(2) + "%", "from the account's peak", e.drawdown_pct > 10 ? "down" : "", "How far below its best value the account is. I halt everything at " + r.max_drawdown_halt_pct + "%.") +
-    kpi("Today", sm(e.day_pnl), pct(e.day_pnl_pct) + " since 00:00 UTC", cls(e.day_pnl), "Change since midnight UTC."));
+  setHTML($("#kpis"), kpiSet(e, r, ps));
   const gross = ps.reduce((a, p) => a + p.qty * (p.mark || p.entry), 0), ex = gross / (e.equity * r.max_total_leverage), dy = Math.max(0, -e.day_pnl_pct) / r.daily_loss_limit_pct, dd = e.drawdown_pct / r.max_drawdown_halt_pct;
-  setHTML($("#meters"), meter("Daily loss limit", dy, (dy * 100).toFixed(0) + "% used", "At 100% I stop opening trades until tomorrow.") + meter("Drawdown halt", dd, (dd * 100).toFixed(0) + "% of limit", "At 100% everything is closed and trading halts.") + meter("Exposure", ex, (ex * 100).toFixed(0) + "% of max", "How much of the allowed position size is in use."));
-  if (setHTML($("#pPos"), ps.length ? `<table><tr><th>Market</th><th>Side</th><th>Profit now</th><th>Stop</th></tr>${ps.map(p => `<tr><td class="t"><b>${esc(p.symbol.replace("=X", ""))}</b></td><td><span class="pill ${p.side > 0 ? "up" : "down"}">${p.side > 0 ? "Long" : "Short"}</span></td><td class="${cls(p.upnl)}">${sm(p.upnl)}</td><td>${px(p.stop)}</td></tr>`).join("")}</table>` : '<div class="empty">No open trades right now.</div>')) { }
+  setHTML($("#meters"), meter("Daily loss limit", dy, (dy * 100).toFixed(0) + "% used", "At 100% I stop opening trades until tomorrow.") + meter("Emergency brake", dd, (dd * 100).toFixed(0) + "% of limit", "How far the account has fallen from its peak, compared with the level that closes everything and halts the bot.") + meter("Money in trades", ex, (ex * 100).toFixed(0) + "% of max", "How much of the allowed position size is in use right now."));
+  if (setHTML($("#pPos"), ps.length ? `<table><tr><th>Market</th><th>Side</th><th>Profit now</th><th>Stop</th></tr>${ps.map(p => `<tr><td class="t"><b>${esc(p.symbol.replace("=X", ""))}</b></td><td>${sidePill(p.side)}</td><td class="${cls(p.upnl)}">${sm(p.upnl)}</td><td>${px(p.stop)}</td></tr>`).join("")}</table>` : '<div class="empty">No open trades right now.</div>')) { }
 }
 async function drawEq() {
   if (!PF.series) return; PF.eq = await api("/api/equity", undefined, true); const e = S.engine, now = Date.now();
@@ -307,12 +307,12 @@ function renderLab(r) {
 function buildAI() {
   $("#p-ai").innerHTML = `<div class="rise"><div class="grid g2"><div class="card" style="--i:0"><h3>AI analyst <span class="pill acc" id="aiState"></span></h3>
    <p class="note" style="margin-top:0">For each trade signal that passes every safety check, the analyst reads one compact briefing (trend, volatility, funding rate, open interest, long/short crowding, your open book) and rates the odds of follow-through. It can call three read-only tools to fetch more facts. Typical cost: <b>about 0.05 cents</b> per signal, because the fixed part of the prompt is cached.</p>
-   <div class="seg" id="aiMode" style="margin-bottom:14px"><div class="thumb"></div><button data-v="off">Off</button><button data-v="advise">Advise</button><button data-v="veto">Veto</button></div>
-   <div class="form"><div><label class="f">Provider</label><select id="aiProv"></select></div><div><label class="f">Model</label><input id="aiModel"></div><div><label class="f">API key <span id="aiHas" class="up"></span></label><input id="aiKey" type="password" placeholder="stored only on this PC" autocomplete="off"></div><div class="pro"><label class="f">Veto cut-off %</label><input id="aiMinP" type="number" min="0" max="100"></div></div>
+   <div class="seg" id="aiMode" style="margin-bottom:14px"><div class="thumb"></div><button data-v="off">Off</button><button data-v="advise">Advise</button><button data-v="veto" class="pro">Veto</button></div>
+   <div class="form"><div><label class="f">Provider</label><select id="aiProv"></select></div><div class="pro"><label class="f">Model</label><input id="aiModel"></div><div><label class="f">API key <span id="aiHas" class="up"></span></label><input id="aiKey" type="password" placeholder="stored only on this PC" autocomplete="off"></div><div class="pro"><label class="f">Veto cut-off %</label><input id="aiMinP" type="number" min="0" max="100"></div></div>
    <div class="row" style="margin-top:14px"><button class="btn pri" id="aiSave">Save</button><button class="btn" id="aiTest" data-tip="Sends one tiny message (~25 tokens, a fraction of a cent)">Test connection</button><span class="sub" id="aiTestOut"></span></div><p class="sub" id="aiHelp" style="margin-top:12px"></p></div>
    <div class="card" style="--i:1"><h3>Spending guardrails</h3><div id="aiBudget"></div><div class="sub" id="aiBudgetNote" style="margin-top:12px"></div></div></div>
-   <div class="grid g2" style="margin-top:14px"><div class="card" style="--i:2"><h3>Does the AI actually help? <span class="sub">live scorecard</span></h3><div id="aiScore"></div></div><div class="card" style="--i:3"><h3>Historical test <span class="sub">6,800 signals</span></h3><div id="aiVal"></div></div></div>
-   <div class="card" style="margin-top:14px;--i:4"><h3>Recent decisions <button class="btn sm" id="aiBrief" data-tip="One call, about 300 tokens">Write a brief</button></h3><div class="note" id="aiBriefOut" style="white-space:pre-wrap;margin-bottom:8px"></div><div class="scroll" id="aiLog"></div></div></div>`;
+   <div class="grid g2 pro" style="margin-top:14px"><div class="card" style="--i:2"><h3>Does the AI actually help? <span class="sub">live scorecard</span></h3><div id="aiScore"></div></div><div class="card" style="--i:3"><h3>Historical test <span class="sub">6,800 signals</span></h3><div id="aiVal"></div></div></div>
+   <div class="card pro" style="margin-top:14px;--i:4"><h3>Recent decisions <button class="btn sm" id="aiBrief" data-tip="One call, about 300 tokens">Write a brief</button></h3><div class="note" id="aiBriefOut" style="white-space:pre-wrap;margin-bottom:8px"></div><div class="scroll" id="aiLog"></div></div></div>`;
   seg($("#aiMode")); $("#aiProv").innerHTML = Object.keys(S.presets).map(k => `<option>${k}</option>`).join("");
   $("#aiProv").onchange = () => { const p = S.presets[$("#aiProv").value]; $("#aiModel").value = p[1]; aiHelp(); };
   $("#aiSave").onclick = guard(async () => { await api("/api/config", { ai: { mode: $("#aiMode").querySelector(".on").dataset.v, provider: $("#aiProv").value, base_url: S.presets[$("#aiProv").value][0] || S.cfg.ai.base_url, model: $("#aiModel").value, min_p: +$("#aiMinP").value, api_key: $("#aiKey").value } }); $("#aiKey").value = ""; toast("AI settings saved", "info", "Saved"); await refresh(); renderAI(true); });
@@ -339,7 +339,7 @@ function buildSettings() {
   $("#p-settings").innerHTML = `<div class="rise"><div class="grid g2">
    <div class="card" style="--i:0"><h3>Account</h3><div class="form"><div><label class="f">Mode</label><select id="sMode"><option value="paper">Paper (built-in simulator)</option><option value="live">Exchange (demo / testnet / real)</option></select></div><div><label class="f">Account size</label><button class="btn" id="sAcct" style="width:100%">Change size and risk</button></div></div>
     <div class="callout" id="liveBox" style="display:none;margin-top:12px">Exchange mode sends API orders. <b>Demo/Testnet</b> is play money; <b>Real</b> is real money and these adapters have never run on a real account. Type <b>I UNDERSTAND</b>: <input id="sConfirm" style="margin-top:8px"></div>
-    <div class="row" style="margin-top:16px;justify-content:space-between"><div><div style="font-weight:550">Show technical details</div><div class="sub">Strategy names, parameters, extra columns</div></div><label class="sw"><input type="checkbox" id="sPro"><span></span></label></div>
+    <div class="row" style="margin-top:16px;justify-content:space-between"><div><div style="font-weight:550">Pro mode</div><div class="sub">Adds the Lab, strategy names, parameters and extra columns</div></div><label class="sw"><input type="checkbox" id="sPro"><span></span></label></div>
     <div class="row" style="margin-top:12px;justify-content:space-between"><div><div style="font-weight:550">Sound effects</div><div class="sub">Short tones when trades open or close</div></div><label class="sw"><input type="checkbox" id="sSound"><span></span></label></div></div>
    <div class="card" style="--i:1"><h3>Safety limits</h3><div class="form"><div><label class="f">Risk per trade %</label><input id="rPer" type="number" step="0.1"></div><div><label class="f">Max open trades</label><input id="rMax" type="number"></div><div><label class="f">Max leverage / trade</label><input id="rLev" type="number" step="0.5"></div><div><label class="f">Max total leverage</label><input id="rTot" type="number" step="0.5"></div><div><label class="f">Daily loss stop %</label><input id="rDay" type="number" step="0.5"></div><div><label class="f">Drawdown halt %</label><input id="rDd" type="number"></div></div></div>
    <div class="card" style="--i:2"><h3>Exchange link</h3><div class="form"><div><label class="f">Exchange</label><select id="bEx"><option value="bybit">Bybit</option><option value="binance">Binance Futures</option></select></div><div><label class="f">Network</label><select id="bNet"></select></div><div><label class="f">API key <span id="bkHas" class="up"></span></label><input id="bKey" type="password" autocomplete="off"></div><div><label class="f">API secret</label><input id="bSec" type="password" autocomplete="off"></div></div>
@@ -390,19 +390,21 @@ function openAcct(trigger) {
 $("#acctChip").onclick = e => S && openAcct(e.currentTarget);
 
 /* ---------- router, nav, command palette */
-const PAGES = [["trade", "chart-candlestick", "Trade"], ["portfolio", "wallet", "Portfolio"], ["lab", "flask-conical", "Lab"], ["ai", "sparkles", "AI"], ["settings", "settings", "Settings"]];
-$("#nav").insertAdjacentHTML("beforeend", PAGES.map(p => `<button data-p="${p[0]}" data-label="${p[2]}" aria-label="${p[2]}"><svg class="i" data-i="${p[1]}"></svg></button>`).join(""));
-function moveNav() { const i = PAGES.findIndex(p => p[0] === page), th = $(".nav .thumb"); th.style.transform = `translateY(${i * 48}px)`; }
+const PAGES = [["portfolio", "layout-dashboard", "Home", 0], ["trade", "chart-candlestick", "Markets", 0], ["lab", "flask-conical", "Lab", 1], ["ai", "sparkles", "AI helper", 0], ["help", "circle-help", "Help", 0], ["settings", "settings", "Settings", 0]];
+$("#nav").insertAdjacentHTML("beforeend", PAGES.map(p => `<button data-p="${p[0]}" data-label="${p[2]}" aria-label="${p[2]}" class="${p[3] ? "pro" : ""}"><svg class="i" data-i="${p[1]}"></svg></button>`).join(""));
+function moveNav() { const b = $(".nav button.on"), th = $(".nav .thumb"); if (!b || !b.offsetParent) { th.style.opacity = 0; return; } th.style.opacity = 1; th.style.transform = `translateY(${b.offsetTop}px)`; }
 function go(p) {
+  const meta = PAGES.find(x => x[0] === p); if (!meta || (meta[3] && simple)) p = "portfolio";
   if (p === page && S) return; const run = () => {
     page = p; $$(".page").forEach(e => e.classList.toggle("on", e.id === "p-" + p)); $$(".nav button").forEach(b => b.classList.toggle("on", b.dataset.p === p)); $("#title").textContent = PAGES.find(x => x[0] === p)[2]; moveNav(); $("#views").scrollTop = 0;
-    if (!S) return; ({ trade: () => { renderTrade(); loadChart(); }, portfolio: () => { renderPortfolio(); drawEq(); }, lab: () => { if (!$("#lInst")) buildLab(); }, ai: () => renderAI(true), settings: () => fillSettings(true) })[p]();
+    if (!S) return; ({ trade: () => { renderTrade(); loadChart(); }, portfolio: () => { renderPortfolio(); drawEq(); }, lab: () => { if (!$("#lInst")) buildLab(); }, ai: () => renderAI(true), help: () => renderHelp(), settings: () => fillSettings(true) })[p]();
   }; swap(run);
 }
 $$(".nav button").forEach(b => b.onclick = () => go(b.dataset.p));
 function openCmd() {
-  const acts = [["Go to Trade", "chart-candlestick", () => go("trade")], ["Go to Portfolio", "wallet", () => go("portfolio")], ["Go to Strategy Lab", "flask-conical", () => go("lab")], ["Go to AI analyst", "sparkles", () => go("ai")], ["Go to Settings", "settings", () => go("settings")],
-    [S.engine.running ? "Pause trading" : "Run trading", S.engine.running ? "pause" : "play", () => engineAct(S.engine.running ? "stop" : "start")], ["Change account size and risk", "wallet", () => openAcct()], [simple ? "Show technical details" : "Hide technical details", "sliders-horizontal", () => { simple = !simple; LS.set("simple", simple ? "1" : "0"); applyView(); }],
+  const acts = [["Go to Home", "layout-dashboard", () => go("portfolio")], ["Go to Markets", "chart-candlestick", () => go("trade")], ...(simple ? [] : [["Go to Strategy Lab", "flask-conical", () => go("lab")]]), ["Go to AI helper", "sparkles", () => go("ai")], ["Go to Help", "circle-help", () => go("help")], ["Go to Settings", "settings", () => go("settings")],
+    ["Take the guided tour", "circle-help", () => startTour(0)], ["Re-run the setup guide", "list", () => openWizard()],
+    [S.engine.running ? "Pause trading" : "Run trading", S.engine.running ? "pause" : "play", () => engineAct(S.engine.running ? "stop" : "start")], ["Change account size and risk", "wallet", () => openAcct()], [simple ? "Switch to Pro mode" : "Switch to Simple mode", "sliders-horizontal", () => { simple = !simple; LS.set("simple", simple ? "1" : "0"); applyView(); }],
     ...insts().map(i => ["Open " + short(i) + " chart", "trending-up", () => { sel = i.id; go("trade"); if (page === "trade") { renderTrade(); loadChart(); } }])];
   const sh = openSheet(`<div class="cmd" style="margin:0"><input id="cq" placeholder="Search markets or actions..." autocomplete="off"><div id="cl" style="margin-top:8px;max-height:46vh;overflow:auto"></div></div>`); sh.style.padding = "10px"; let idx = 0, list = acts;
   const draw = () => { $("#cl").innerHTML = list.map((a, i) => `<div class="it ${i === idx ? "on" : ""}" data-i="${i}"><svg class="i" data-i="${a[1]}"></svg>${esc(a[0])}</div>`).join("") || '<div class="empty">No matches</div>'; icons($("#cl")); $$(".it", $("#cl")).forEach(el => { el.onmouseenter = () => { idx = +el.dataset.i; $$(".it", $("#cl")).forEach(x => x.classList.toggle("on", x === el)); }; el.onclick = () => run(); }); };
@@ -415,12 +417,16 @@ $("#searchBtn").onclick = openCmd;
 document.addEventListener("keydown", e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); sheetOpen ? closeSheet() : S && openCmd(); return; }
   if (e.key === "Escape") closeSheet(); if (/INPUT|TEXTAREA|SELECT/.test((document.activeElement || {}).tagName) || e.ctrlKey || e.metaKey || sheetOpen) return;
-  const k = "12345".indexOf(e.key); if (k >= 0) go(PAGES[k][0]);
+  const vis = PAGES.filter(p => !(simple && p[3])), k = "123456".indexOf(e.key); if (k >= 0 && vis[k]) go(vis[k][0]);
 });
 const engineAct = guard(async a => { await api("/api/engine", { action: a }); await refresh(); });
 seg($("#engSeg"), v => engineAct(v === "run" ? "start" : "stop"));
 $("#killBtn").onclick = async e => { if (!await confirmSheet("Emergency stop?", "This closes <b>every</b> open position at market and halts all trading until you resume it in Settings.", "Close everything", true, e.currentTarget)) return; guard(async () => { await api("/api/engine", { action: "kill" }); toast("Everything closed and trading halted.", "loss", "Kill switch"); refresh(); })(); };
-function applyView() { document.body.classList.toggle("simple", simple); const s = $("#sPro"); if (s) s.checked = !simple; }
+function applyView() {
+  document.body.classList.toggle("simple", simple); const s = $("#sPro"); if (s) s.checked = !simple;
+  const meta = PAGES.find(p => p[0] === page); if (simple && meta && meta[3]) go("portfolio");
+  requestAnimationFrame(moveNav); if (S) { if (page === "portfolio") renderPortfolio(); else if (page === "trade") renderTrade(); }
+}
 
 /* ---------- boot + polling (visible tab only; local server only) */
 icons(); applyView();
@@ -435,11 +441,12 @@ function tick() {
   if (page === "ai" && S) renderAI();
 }
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { tk = { st: 0, ch: 0, sp: 0, eq: 0 }; tick(); } });
-window.addEventListener("resize", () => { $("#engSeg").move && $("#engSeg").move(); });
+const moveSegs = () => { $$(".seg").forEach(x => x.move && x.move()); moveNav(); };
+window.addEventListener("resize", moveSegs); if (document.fonts) document.fonts.ready.then(moveSegs);
 (async function boot() {
   await Promise.all([refresh(), pollSparks()]); tk.st = tk.sp = Date.now();
-  if (S) { renderTrade(); await loadChart(true); }
+  if (S) { renderPortfolio(); drawEq(); }
   moveNav(); $$(".nav button").forEach(b => b.classList.toggle("on", b.dataset.p === page)); $("#engSeg").move();
   setTimeout(() => $("#boot").classList.add("out"), 250); setTimeout(() => $("#boot").remove(), 900);
-  setInterval(tick, 1000);
+  setInterval(tick, 1000); guideInit();
 })();

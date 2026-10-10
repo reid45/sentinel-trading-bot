@@ -27,6 +27,7 @@ DEFAULTS = {
     "broker": {"exchange": "bybit", "bybit_env": "demo", "bybit_key": "", "bybit_secret": "",
                "binance_key": "", "binance_secret": "", "binance_testnet": True},
     "webhook_secret": "",
+    "ui": {"onboarded": False, "tour_done": False},
 }
 
 

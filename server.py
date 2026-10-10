@@ -143,7 +143,7 @@ class H(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(b)))
-        self.send_header("Cache-Control", getattr(self, "_cc", "no-store"))
+        self.send_header("Cache-Control", self.__dict__.pop("_cc", "no-store"))   # per-request: HTTP/1.1 keep-alive reuses this handler
         self.end_headers()
         self.wfile.write(b)
 
@@ -195,7 +195,15 @@ class H(BaseHTTPRequestHandler):
         if "/vendor/" in path:
             self._cc = "public, max-age=604800, immutable"        # pinned third-party files never change: browser caches them
         with open(full, "rb") as f:
-            self._send(200, f.read(), mimetypes.guess_type(full)[0] or "application/octet-stream")
+            body = f.read()
+        if full.endswith("index.html"):                              # stamp local assets with their mtime so an update can never serve stale JS/CSS
+            import re
+
+            def stamp(m):
+                fp = os.path.join(WEB, m.group(2))
+                return '%s="%s?v=%d"' % (m.group(1), m.group(2), int(os.path.getmtime(fp))) if os.path.isfile(fp) else m.group(0)
+            body = re.sub(r'(src|href)="((?!vendor/|http|data:)[^"?]+\.(?:js|css))"', stamp, body.decode("utf-8")).encode("utf-8")
+        self._send(200, body, mimetypes.guess_type(full)[0] or "application/octet-stream")
 
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)

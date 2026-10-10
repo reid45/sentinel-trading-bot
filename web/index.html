@@ -20,20 +20,21 @@
   </aside>
   <div id="main">
     <header id="topbar">
-      <h1 id="title">Trade</h1>
+      <h1 id="title">Home</h1>
       <span class="chip" id="engChip"><span class="led" id="engLed"></span><span id="engTxt">Connecting</span></span>
-      <span class="chip" id="modeChip">Paper</span>
+      <span class="chip" id="modeChip" data-tip="Practice mode: real market prices, fake money. Nothing here can lose real money.">Practice mode</span>
       <span class="grow"></span>
-      <div class="search" id="searchBtn"><svg class="i" data-i="search"></svg><span>Search or run a command</span><kbd>Ctrl K</kbd></div>
+      <div class="search" id="searchBtn"><svg class="i" data-i="search"></svg><span>Search or jump to...</span><kbd>Ctrl K</kbd></div>
       <span class="chip btn" id="acctChip" data-tip="Change account size and risk level"><svg class="i" data-i="wallet"></svg><b id="acctTxt" class="num">--</b></span>
       <div class="seg" id="engSeg"><div class="thumb"></div><button data-v="run"><svg class="i" data-i="play"></svg>Run</button><button data-v="pause"><svg class="i" data-i="pause"></svg>Pause</button></div>
       <button class="btn danger ico" id="killBtn" data-tip="Emergency stop: close everything and halt trading"><svg class="i" data-i="power"></svg></button>
     </header>
     <main id="views">
-      <section class="page on" id="p-trade"></section>
-      <section class="page" id="p-portfolio"></section>
+      <section class="page on" id="p-portfolio"></section>
+      <section class="page" id="p-trade"></section>
       <section class="page" id="p-lab"></section>
       <section class="page" id="p-ai"></section>
+      <section class="page" id="p-help"></section>
       <section class="page" id="p-settings"></section>
       <div class="foot"><span>Sentinel &middot; paper trading is simulated, past results do not predict the future</span><span>Charts by <a href="https://www.tradingview.com/" target="_blank" rel="noopener">TradingView Lightweight Charts&trade;</a></span><span>Icons: Lucide &middot; Coins: cryptocurrency-icons</span></div>
     </main>
@@ -44,6 +45,7 @@
 <div class="scrim" id="scrim"><div class="sheet" id="sheet"></div></div>
 <script src="vendor/icons.js"></script>
 <script src="vendor/lwc.js"></script>
+<script src="guide.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

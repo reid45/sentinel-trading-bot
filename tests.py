@@ -423,6 +423,34 @@ class ServerApi(unittest.TestCase):
         st = json.loads(self.call("/api/state")[1])
         self.assertTrue(all("spark" not in v for v in st["engine"]["status"].values()))   # hot payload stays small
 
+    def test_first_run_flags_persist(self):
+        st = json.loads(self.call("/api/state")[1])
+        self.assertIn("ui", st["cfg"])
+        self.assertEqual(self.call("/api/config", {"ui": {"onboarded": True}})[0], 200)
+        self.assertTrue(json.loads(self.call("/api/state")[1])["cfg"]["ui"]["onboarded"])
+        self.assertFalse(json.loads(self.call("/api/state")[1])["cfg"]["ui"]["tour_done"])      # nested merge keeps the other flag
+        self.assertTrue(DEFAULTS["ui"]["onboarded"] is False)                                     # a fresh install always starts with the setup wizard
+        for f in ("web/guide.js", "docs/MANUAL.md", "LICENSE", "THIRD_PARTY_NOTICES.md", "run.bat", "run.sh"):
+            self.assertTrue(os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), f)), f)
+
+    def test_cache_header_does_not_leak_across_keepalive_requests(self):
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", 18765)
+        c.request("GET", "/vendor/lwc.js"); r = c.getresponse(); r.read()
+        self.assertIn("immutable", r.getheader("Cache-Control"))
+        for path in ("/api/state", "/app.js", "/"):                    # same TCP connection: must NOT inherit the week-long cache header
+            c.request("GET", path); r = c.getresponse(); r.read()
+            self.assertEqual(r.getheader("Cache-Control"), "no-store", path)
+        c.close()
+
+    def test_index_assets_are_version_stamped(self):
+        import re, urllib.request as ur
+        html = ur.urlopen("http://127.0.0.1:18765/").read().decode()
+        self.assertRegex(html, r'src="guide\.js\?v=\d+"')
+        self.assertRegex(html, r'src="app\.js\?v=\d+"')
+        self.assertRegex(html, r'href="style\.css\?v=\d+"')
+        self.assertIn('src="vendor/lwc.js"', html)                        # pinned third-party files stay unstamped (cached a week)
+
     def test_backtest_job(self):
         c, b = self.call("/api/backtest", {"kind": "single", "market": "futures", "symbol": "BTCUSDT", "tf": "4h", "strategy": "donchian",
                                           "params": dict(n=40, trend=0, stop=4.0, trail=1, tp=0, reverse=1), "years": 3})
