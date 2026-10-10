@@ -75,6 +75,22 @@ We also tested cutting position size while the account is in drawdown (`research
 Brakes trim drawdowns by 3-5 points but give up most of the profit, because trend-following earns its money in the recoveries after the dips. Not enabled.
 The protections that *are* on (daily-loss stop, drawdown halt at 20%, per-trade risk of 0.3%, max 15 open trades) exist to survive, not to boost returns.
 
+## Result 4: the two "fast" and "patient" styles, tested honestly
+
+You asked for a high-frequency scalper and a patient day trader that follows the big players. Both were built, and both were tested first:
+
+| Style | Test | Result |
+|-------|------|--------|
+| **Scalper** | 75 days of 1-minute candles, BTC / ETH / SOL / XRP; mean-reversion, breakout and order-flow families; limit-order entries and exits with conservative fills (price must trade *through* the order, stops pay taker fees + slippage); 148 settings searched, judged on the last 40% | **0 of 148 profitable in-sample.** At retail fees (maker 2 bps / taker 5 bps) the best lost **about 5 bps per trade** out-of-sample; even at a zero-maker / 2.5 bps-taker tier it lost **about 1 bp per trade with a 73% win rate**. Roughly 20 to 140 trades a day. Fees are bigger than the edge. |
+| **Smart-money day trader** (crypto) | The full confirmation sequence (4h trend, liquidity sweep, high-volume displacement, retest, target = next liquidity pool, 2R minimum) on 2 years of 15-minute candles, 4 coins, about 750 setups, costs included | About 1 trade a day across 4 coins; average **-0.10R in-sample, -0.27R out-of-sample** (t about -4). It loses. |
+| Smart-money, stocks | First-hour and 5-minute opening-range breakouts with relative-volume and VWAP filters, 46 liquid US stocks | 0 of 60 settings profitable on 2 years of hourly bars (out-of-sample -9 to -15 bps per trade); 0 of 39 on 60 days of 5-minute bars (best -0.2 bps) |
+| "Following the big players" (public data) | Top-trader positioning, all-account long/short ratio, taker flow, open interest vs the next 1h and 4h return, 12 coins, 30 days | Looked significant when pooled, but **market-neutral** (coin vs coin at each step) top-trader positioning had no predictive power (t = 0.5). Only open interest rising with price and the crowd ratio showed a weak 1-hour effect (IC about 0.07, t about 2.5): far too small to pay a 16 bps round trip |
+
+What was shipped anyway, and why: both styles run in **practice mode only**, behind switches, each with its own scorecard, honest evidence text, and
+guards (the scalper pauses itself when its last 40 trades average below zero after fees and shows how far your fee tier is from break-even; the smart-money
+trader trades at most 3 times a day, checks liquidity first and only acts after the full confirmation sequence). They exist so you can test your own fee
+tier, markets and settings against reality on paper instead of trusting anyone's claims, including ours.
+
 ## What this means for the product
 
 * **Default strategy:** Trend mix, 4-hour candles, 38 liquid coins (two contracts whose Binance candles are frozen were removed), 0.3% risk per trade, up to 15 open trades.
@@ -100,6 +116,12 @@ python research/study2.py 4h donchian       # any family on any timeframe: donch
 python research/portfolio_study.py          # single systems on a shared account, tuned vs fresh coins
 python research/ensemble_study.py           # the four-system blend
 python research/ensemble_union.py           # the single-position blend (worse)
+python research/fetch_micro.py              # 75 days of 1-minute candles with taker flow
+python research/scalp_study.py              # the scalper, two fee tiers
+python research/orb_study.py                # stocks: first-hour opening-range breakout
+python research/orb5_study.py               # stocks: 5-minute opening range (60 days only)
+python research/footprint_study.py          # big-player positioning vs next-hour returns
+python research/playbook_study.py           # the smart-money confirmation sequence on crypto
 python research/brake_study.py              # drawdown brake variants (rejected)
 python research/engine_replay.py 300        # the live engine vs the backtester on the last 300 bars
 ```

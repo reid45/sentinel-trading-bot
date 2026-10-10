@@ -3,6 +3,8 @@ Paper mode simulates fills (same costs as the backtester). Live mode (futures on
 import math, threading, time, traceback
 from concurrent.futures import ThreadPoolExecutor
 from . import data, analyst, daytrader, rules
+from .scalper import Scalper
+from .smart import Smart
 from .backtest import MARKET_COSTS, TF_HOURS
 from .strategies import STRATEGIES
 from . import indicators as I
@@ -27,17 +29,64 @@ class Engine:
         self.last_snapshot = 0
         self._broker = None
         self.day_stats = dict(scans=0, candidates=0, trades=0, last=0)
+        self.scalper = Scalper(self)
+        self.smart = Smart(self)
 
     # ------------------------------------------------------------------ lifecycle
+    def migrate_accounting(self):
+        """One-time fix for versions that charged the entry fee twice (once in the fill price, once as a cash deduction). Refunds the extra charge on
+        open positions and on past paper trades, marks everything as corrected, and says so in the activity log."""
+        if self.s.get("acct_v2"):
+            return 0.0
+        refund = 0.0
+        with self.lock:
+            for pid, p in self.s.positions().items():
+                if p.get("acct") != 2:
+                    refund += p.get("fee_in", 0.0)
+                    p["acct"] = 2
+                    self.s.set_position(pid, p)
+            for t in self.s.trades(100000):
+                if t.get("mode") != "live":
+                    mkt = (t["inst"].split(":")[1] if t["inst"].startswith(("day:", "scalp:", "smart:")) else t["inst"].split(":")[0])
+                    mc = MARKET_COSTS.get(mkt, MARKET_COSTS["futures"])
+                    refund += t["qty"] * t["entry"] * (mc["fee"] + mc["slip"])
+                    with self.s.lock:
+                        self.s.db.execute("UPDATE trades SET pnl = pnl + ? WHERE id = ?", (t["qty"] * t["entry"] * (mc["fee"] + mc["slip"]), t["id"]))
+                        self.s.db.commit()
+            if refund > 0:
+                self.s.put("cash", self.cash() + refund)
+            self.s.put("acct_v2", True)
+        if refund > 0:
+            self.s.event("info", "Accounting corrected: entry fees had been charged twice. Refunded $%.2f across open and past trades." % refund)
+        return refund
+
     def start(self):
         with self.lock:
             if self.running:
                 return
+            self.migrate_accounting()
             self.running = True
             self.s.put("engine_on", True)
             self.thread = threading.Thread(target=self._loop, daemon=True)
             self.thread.start()
+            threading.Thread(target=self._scalp_loop, daemon=True).start()
             self.s.event("info", "Engine started (%s mode)" % self.s.cfg["mode"])
+
+    def _scalp_loop(self):
+        """The scalper needs a quicker heartbeat than the 20-second main loop (it works on 1-minute candles)."""
+        errs = 0
+        while self.running:
+            try:
+                self.scalper.tick()
+                errs = 0
+            except Exception:
+                errs += 1
+                if errs in (1, 20):
+                    self.s.event("error", "scalper loop: " + traceback.format_exc().splitlines()[-1][:100])
+            for _ in range(4):
+                if not self.running:
+                    return
+                time.sleep(1)
 
     def stop(self):
         self.running = False
@@ -66,7 +115,7 @@ class Engine:
         market = p.get("market") or p["inst"].split(":")[0]
         mc = MARKET_COSTS.get(market, MARKET_COSTS["futures"])
         mark = p.get("mark", p["entry"])
-        return p["side"] * (mark - p["entry"]) * p["qty"] - p.get("fund", 0) - mark * p["qty"] * (mc["fee"] + mc["slip"])
+        return p["side"] * (mark - p["entry"]) * p["qty"] - p.get("fund", 0) - mark * p["qty"] * p.get("cost_out_stop", mc["fee"] + mc["slip"])
 
     def equity(self):
         return self.cash() + sum(self.upnl(p) for p in self.s.positions().values())
@@ -129,6 +178,11 @@ class Engine:
             self._cc = None
         if cfg["day"].get("enabled"):
             self._day_cycle()
+        if cfg["smart"].get("enabled"):
+            try:
+                self.smart.tick()
+            except Exception as ex:
+                self.s.event("error", "smart-money trader: " + str(ex)[:100])
         self._risk_guards()
         self.last_cycle = t
         if t - self.last_snapshot >= 60000:
@@ -242,8 +296,9 @@ class Engine:
         with self.lock:
             return self._open(inst, *a, **k)
 
-    def _open(self, inst, side, ref_price, d, source="engine", tp=None, hist=None, stop=None):
-        """Risk-checked entry. Returns (ok, message)."""
+    def _open(self, inst, side, ref_price, d, source="engine", tp=None, hist=None, stop=None, costs=None, risk_pct=None):
+        """Risk-checked entry. Returns (ok, message). `costs` = dict(in, out_target, out_stop) as fractions of notional for styles with their own
+        fee model (the scalper's limit orders); every cost is charged once, inside the fill price."""
         cfg = self.s.cfg
         r = cfg["risk"]
         if self.halted():
@@ -251,19 +306,21 @@ class Engine:
         poss = self.s.positions()
         if inst["id"] in poss:
             return False, "already in position"
-        if len(poss) >= r["max_positions"]:
+        if source != "scalp" and len([p for p in poss.values() if p.get("source") != "scalp"]) >= r["max_positions"]:       # scalps have their own small book
             return False, "max positions reached"
         if self.s.get("daily_block"):
             return False, "daily loss limit hit"
         eq = self.equity()
         mc = MARKET_COSTS[inst["market"]]
         fee = mc["fee"] + mc["slip"]
-        px = ref_price * (1 + fee * side)
+        fee_in = costs["in"] if costs else fee
+        fee_rt = (costs["in"] + costs["out_stop"]) if costs else 2 * fee
+        px = ref_price * (1 + fee_in * side)
         if stop is not None:
             d = abs(px - stop)
         if d <= 0:
             return False, "bad stop distance"
-        qty = min(eq * r["per_trade_pct"] / 100 / (d + 2 * fee * px), eq * min(r["max_leverage_per_pos"], mc["max_lev"]) / px)      # risk budget covers fees + slippage both ways, so a stop-out costs what you set
+        qty = min(eq * (risk_pct if risk_pct is not None else r["per_trade_pct"]) / 100 / (d + fee_rt * px), eq * min(r["max_leverage_per_pos"], mc["max_lev"]) / px)      # risk budget covers fees + slippage both ways, so a stop-out costs what you set
         gross = sum(p["qty"] * p.get("mark", p["entry"]) for p in poss.values())
         room = eq * r["max_total_leverage"] - gross
         qty = min(qty, room / px)
@@ -280,7 +337,7 @@ class Engine:
             qty = round(q, 8)
         if qty * px < 5:
             return False, "below the $5 minimum order value"
-        ok, why = rules.entry_allowed(self.s, inst, side, qty * (d + 2 * fee * px), source, eq, poss)
+        ok, why = rules.entry_allowed(self.s, inst, side, qty * (d + fee_rt * px), source, eq, poss)
         if not ok:
             return False, why
         ai_note, ai_p = "", None
@@ -303,11 +360,14 @@ class Engine:
             except Exception as e:
                 return False, "broker error: " + str(e)[:100]
         pos = dict(inst=inst["id"], symbol=inst["symbol"], market=inst["market"], side=side, qty=qty, entry=px, stop=stop_px, tp=tp, d=d,
-                   t_open=now_ms(), fee_in=px * qty * fee, fund=0.0, source=source, mark=ref_price, mode=cfg["mode"], ai_p=ai_p)
-        self.s.put("cash", self.cash() - pos["fee_in"])
-        self.s.set_position(inst["id"], pos)
-        self.s.think(inst, "open", "Opened %s %s at %.6g, stop %.6g%s, risking $%.2f" % ("LONG" if side == 1 else "SHORT", inst["symbol"], px, stop_px, (", target %.6g" % tp) if tp else "", qty * d))
-        return True, "opened %.5g @ %.6g stop %.6g (risk $%.2f)%s" % (qty, px, stop_px, qty * d, ai_note)
+                   t_open=now_ms(), fee_in=ref_price * qty * fee_in, fund=0.0, source=source, mark=ref_price, mode=cfg["mode"], ai_p=ai_p)
+        pos["acct"] = 2
+        if costs:
+            pos.update(cost_out_target=costs["out_target"], cost_out_stop=costs["out_stop"])
+        self.s.set_position(inst["id"], pos)                       # entry cost already sits in the fill price: no second deduction from cash
+        if source != "scalp":
+            self.s.think(inst, "open", "Opened %s %s at %.6g, stop %.6g%s, risking $%.2f" % ("LONG" if side == 1 else "SHORT", inst["symbol"], px, stop_px, (", target %.6g" % tp) if tp else "", qty * d))
+        return True, "opened %.5g @ %.6g stop %.6g (risk $%.2f)%s" % (qty, px, stop_px, qty * (d + fee_rt * px), ai_note)
 
     def _close(self, inst, *a, **k):
         with self.lock:
@@ -316,6 +376,10 @@ class Engine:
     def _close_locked(self, inst, pos, ref_price, reason, exchange_side=False):
         mc = MARKET_COSTS[inst["market"]]
         fee = mc["fee"] + mc["slip"]
+        if reason == "target" and pos.get("cost_out_target") is not None:        # a resting limit order that got hit pays the maker fee
+            fee = pos["cost_out_target"]
+        elif pos.get("cost_out_stop") is not None:
+            fee = pos["cost_out_stop"]
         px = ref_price * (1 - fee * pos["side"])
         if self.live() and not exchange_side and self.broker():
             try:
@@ -323,15 +387,16 @@ class Engine:
             except Exception as e:
                 self.s.event("error", "close failed %s: %s" % (inst["symbol"], str(e)[:100]))
         gross = pos["side"] * (px - pos["entry"]) * pos["qty"]
-        fees = pos.get("fee_in", 0) + abs(ref_price - px) * pos["qty"]
-        pnl = gross - pos.get("fee_in", 0) - pos.get("fund", 0)
+        fees = pos.get("fee_in", 0) + abs(ref_price - px) * pos["qty"]          # reporting only: both sides' costs are already inside entry and exit prices
+        pnl = gross - pos.get("fund", 0)
         self.s.put("cash", self.cash() + gross - pos.get("fund", 0))
         self.s.add_trade(inst=inst["id"], symbol=inst["symbol"], side=pos["side"], qty=pos["qty"], entry=pos["entry"], exit=px,
                          pnl=pnl, fees=fees + pos.get("fund", 0), t_open=pos["t_open"], t_close=now_ms(), reason=reason,
                          source=pos.get("source"), mode=pos.get("mode"), ai_p=pos.get("ai_p"))
         self.s.set_position(inst["id"], None)
-        self.s.event("close", "%s closed (%s) %+.2f" % (inst["symbol"], reason, pnl))
-        self.s.think(inst, "close", "Closed %s (%s): %s" % (inst["symbol"], reason, ("+" if pnl >= 0 else "-") + "$%.2f" % abs(pnl)))
+        if pos.get("source") != "scalp":                                         # a scalper makes hundreds of trades a day: they live in the journal, not the activity feed
+            self.s.event("close", "%s closed (%s) %+.2f" % (inst["symbol"], reason, pnl))
+            self.s.think(inst, "close", "Closed %s (%s): %s" % (inst["symbol"], reason, ("+" if pnl >= 0 else "-") + "$%.2f" % abs(pnl)))
 
     def _sync_stop(self, inst, pos):
         if self.live() and self.broker() and inst["market"] == "futures":
@@ -354,6 +419,10 @@ class Engine:
 
     def _inst_for(self, inst_id):
         """Config instrument, a trendmix sleeve ('<id>#<name>'), or the pseudo-instrument a day-trading position lives under ('day:' + base id)."""
+        for style in ("scalp", "smart"):                              # '<style>:<watchlist id>'
+            if inst_id.startswith(style + ":"):
+                b = next((i for i in self.s.cfg["instruments"] if i["id"] == inst_id[len(style) + 1:]), None)
+                return self.style_inst(style, b) if b else None
         base = inst_id[4:] if inst_id.startswith("day:") else inst_id
         parent = base.partition("#")[0]
         b = next((i for i in self.s.cfg["instruments"] if i["id"] == parent), None)
@@ -362,6 +431,11 @@ class Engine:
         if b and "#" in base:
             return next((s for s in self._sleeves(dict(b, enabled=True)) if s["id"] == base), None)
         return b
+
+    def style_inst(self, style, base):
+        """Pseudo-instrument a scalper / smart-money position lives under: '<style>:' + the market's watchlist id."""
+        tf = {"scalp": "1m", "smart": self.s.cfg["smart"]["tf"]}[style]
+        return dict(base, id="%s:%s" % (style, base["id"]), tf=tf, strategy=style, params={"trail": 0}, enabled=True)
 
     # ------------------------------------------------------------------ AI day trading
     def _day_cycle(self):

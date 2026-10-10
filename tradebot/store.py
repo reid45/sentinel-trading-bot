@@ -29,6 +29,11 @@ DEFAULTS = {
            "palette": "classic", "motion": True, "landing": "portfolio", "clock": "24", "currency": "USD",
            "home": {"insight": True, "kpis": True, "safety": True, "open": True, "markets": True}},
     "day": {"enabled": False, "tf": "15m", "markets": 8, "min_conf": 50, "max_hold_bars": 12},
+    "scalp": {"enabled": False, "markets": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"], "maker_bps": 2.0, "taker_bps": 5.0, "slip_bps": 1.0,
+              "k": 2.0, "rsi": 20, "off": 0.3, "wait": 3, "tgt": 0.6, "stop": 2.0, "hold": 10,
+              "risk_pct": 0.1, "max_trades_day": 300, "daily_loss_pct": 1.0, "auto_pause": True, "auto_pause_trades": 40},
+    "smart": {"enabled": False, "crypto": True, "stocks": False, "tf": "15m", "markets": 8, "min_score": 5, "max_trades_day": 3, "rr_min": 2.0, "risk_pct": 0.5, "use_ai": True,
+              "min_dollar_vol_m": 100.0, "max_spread_bps": 4.0, "max_hold_bars": 16, "stock_symbols": ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "META", "TSLA"], "stock_min_dollar_vol_m": 500.0},
     "rules": {"hours": {"enabled": False, "start": 8, "end": 22, "days": [0, 1, 2, 3, 4, 5, 6]},      # UTC hours; trade only inside this window
               "direction": "both",                                  # both | long | short
               "max_trades_day": 0,                                  # 0 = no limit

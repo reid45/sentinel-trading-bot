@@ -16,6 +16,9 @@ body.dense .card{padding:12px 14px}body.dense #views{padding:14px 16px 30px}body
 body.nomotion *,body.nomotion *::before,body.nomotion *::after{animation:none!important;transition:none!important}
 /* home sections the owner switched off */
 body.hide-insight .sec-insight,body.hide-kpis .sec-kpis,body.hide-safety .sec-safety,body.hide-open .sec-open,body.hide-markets .sec-markets{display:none!important}
+.sgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(400px,1fr));gap:14px;align-items:start}
+@media(max-width:520px){.sgrid{grid-template-columns:1fr}}
+fieldset:disabled input,fieldset:disabled select,fieldset:disabled button{opacity:.55;pointer-events:none}
 /* account chip + menu */
 #userChip{display:inline-flex}#userChip .av{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:700;color:#0a0b10;background:linear-gradient(135deg,var(--acc),var(--acc2))}
 .swatches{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px}

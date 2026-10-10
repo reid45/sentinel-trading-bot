@@ -981,6 +981,9 @@ class AuthServer(unittest.TestCase):
         self.assertEqual(self.req("POST", "/api/engine", {"action": "nonsense"}, cookie=tok, extra={"X-Sentinel": "1", "Origin": "https://evil.example"})[0], 403)
         self.assertEqual(self.req("POST", "/api/engine", {"action": "nonsense"}, cookie=tok, extra={"X-Sentinel": "1"})[0], 400)    # reaches the handler
         self.assertEqual(self.req("POST", "/hook", {"secret": "bad"})[0], 403)                                                # webhook has its own secret, no login
+        self.req("POST", "/api/auth/login", {"username": "reid", "password": "wrong wrong wrong"}, extra={"CF-Connecting-IP": "203.0.113.9"})
+        self.assertIn("ip:203.0.113.9", m.auth.fails)                                                                          # behind Cloudflare the real visitor is what gets rate-limited
+        m.auth.fails.clear()
         # --- a view-only account
         hdr = {"X-Sentinel": "1"}
         self.assertEqual(self.req("POST", "/api/auth/users", {"action": "add", "username": "cousin", "password": "viewer pass phrase", "role": "viewer"}, cookie=tok, extra=hdr)[0], 200)
@@ -1231,6 +1234,362 @@ class EvidenceTools(unittest.TestCase):
         out = analyst.run_tool("levels", {"symbol": "BTCUSDT"}, s, lambda m, sy, tf, n: self.hist15(n=1200))
         self.assertIn("prev_day_high", out)
         self.assertEqual(analyst.run_tool("levels", {"symbol": "NOPE"}, s, lambda *a: []), "unknown symbol")
+
+
+def bars_1m(closes, vol=100.0, t0=1_790_000_000_000):
+    out, prev = [], closes[0]
+    for i, c in enumerate(closes):
+        out.append((t0 + i * 60000, prev, max(prev, c) + 0.02, min(prev, c) - 0.02, c, vol))
+        prev = c
+    return out
+
+
+class AccountingFix(unittest.TestCase):
+    def test_entry_cost_is_charged_once(self):
+        s = mk_store(instruments=[dict(DEFAULTS["instruments"][0])])
+        e = Engine(s, pricer=lambda m, sym: 100.0)
+        e._lot = lambda inst: None
+        inst = s.cfg["instruments"][0]
+        inst = dict(inst, strategy="donchian", params={"trail": 0})
+        ok, msg = e.open(inst, 1, 100.0, 4.0)
+        self.assertTrue(ok, msg)
+        p = s.positions()[inst["id"]]
+        notional = p["qty"] * 100.0
+        self.assertAlmostEqual(e.cash(), 10000.0, places=6)                                  # opening does not touch cash: the cost sits in the fill price
+        e.close_by_id(inst["id"])
+        # flat round trip at 100: the loss is exactly fee+slippage on each side of the notional (0.08% x 2), not three times
+        self.assertAlmostEqual(10000.0 - e.equity(), notional * 0.0008 * 2 * (1 + 0.0008 / 2), delta=notional * 0.0001)
+        self.assertAlmostEqual(s.trades(1)[0]["pnl"], e.equity() - 10000.0, places=6)         # the journal and the account agree to the cent
+
+    def test_loss_at_stop_equals_risk(self):
+        s = mk_store(instruments=[dict(DEFAULTS["instruments"][0])])
+        e = Engine(s, pricer=lambda m, sym: 100.0)
+        e._lot = lambda inst: None
+        inst = dict(s.cfg["instruments"][0], strategy="donchian", params={"trail": 0})
+        e.open(inst, 1, 100.0, 4.0)
+        p = s.positions()[inst["id"]]
+        e._close(inst, p, p["stop"], "stop", exchange_side=True)
+        self.assertAlmostEqual(-s.trades(1)[0]["pnl"] / 10000.0 * 100, s.cfg["risk"]["per_trade_pct"], delta=0.02)    # a stop-out costs what you set
+
+
+class ScalperTests(unittest.TestCase):
+    def mk(self, **over):
+        sc = dict(enabled=True, markets=["BTCUSDT"], maker_bps=2.0, taker_bps=5.0, slip_bps=1.0, k=2.0, rsi=20, off=0.3, wait=3, tgt=0.6, stop=2.0, hold=10, risk_pct=0.1,
+                  max_trades_day=300, daily_loss_pct=50.0, auto_pause=False)
+        sc.update(over)
+        self.s = mk_store(instruments=[dict(DEFAULTS["instruments"][0])], scalp=sc)
+        self.s.put("scalp_since", 0)
+        self.e = Engine(self.s, pricer=lambda m, sym: 100.0)
+        self.e._lot = lambda inst: None
+        self.base = self.s.cfg["instruments"][0]
+        self.inst = self.e.style_inst("scalp", self.base)
+        return self.e.scalper
+
+    def dump_series(self):
+        import math
+        closes = [100 + 0.15 * math.sin(i / 3.0) for i in range(60)] + [99.4, 98.9, 98.5]            # then a fast flush below the band
+        return bars_1m(closes)
+
+    def test_signal_needs_a_real_overextension(self):
+        from tradebot import scalper
+        c = scalper.DEFAULTS
+        h = self.mk and bars_1m([100 + 0.05 * (i % 3) for i in range(80)])
+        self.assertIsNone(scalper.signal(h, c))                                                    # quiet market: no signal
+        sg = scalper.signal(self.dump_series(), c)
+        self.assertIsNotNone(sg)
+        self.assertEqual(sg[0], 1)                                                                 # buy the flush
+        self.assertLess(sg[1], 98.5)                                                               # resting limit BELOW the last close (maker), not a market order
+
+    def test_limit_fill_target_and_costs(self):
+        sc = self.mk()
+        hist = self.dump_series()
+        sc._bar("BTCUSDT", self.inst, hist, self.s.cfg["scalp"])
+        pend = sc.pend["BTCUSDT"]
+        self.assertEqual(pend["side"], 1)
+        t = hist[-1][0]
+        miss = (t + 60000, 98.5, 98.9, pend["limit"] + 0.05, 98.7, 100.0)                         # never trades through the limit: no fill
+        sc._bar("BTCUSDT", self.inst, hist + [miss], self.s.cfg["scalp"])
+        self.assertEqual(self.s.positions(), {})
+        L = pend["limit"]
+        fill = (t + 120000, L + 0.01, L + 0.03, L - 0.02, L + 0.01, 100.0)                         # trades through: filled at the limit price
+        sc._bar("BTCUSDT", self.inst, hist + [miss, fill], self.s.cfg["scalp"])
+        pos = self.s.positions()[self.inst["id"]]
+        self.assertAlmostEqual(pos["entry"], pend["limit"] * 1.0002, places=6)                    # maker fee only, no slippage
+        self.assertEqual(pos["source"], "scalp")
+        self.assertLessEqual(pos["qty"] * (pos["d"] + 0.0007 * pos["entry"]), 10000 * 0.001 * 1.001)   # risk 0.1% of the account, fees included
+        tgt = pos["tp"]
+        win = (t + 180000, 98.7, tgt + 0.05, 98.6, tgt, 100.0)
+        sc._bar("BTCUSDT", self.inst, hist + [miss, fill, win], self.s.cfg["scalp"])
+        tr = self.s.trades(1)[0]
+        self.assertEqual((tr["reason"], tr["source"]), ("target", "scalp"))
+        self.assertAlmostEqual(tr["exit"], tgt * (1 - 0.0002), places=6)                          # a limit target pays the MAKER fee on the way out
+        self.assertEqual([x for x in self.s.events(50) if x["level"] in ("close", "trade")], [])  # hundreds of scalps a day must not flood the activity feed
+
+    def _filled(self):
+        sc = self.mk()
+        hist = self.dump_series()
+        sc._bar("BTCUSDT", self.inst, hist, self.s.cfg["scalp"])
+        pend, t = sc.pend["BTCUSDT"], hist[-1][0]
+        L = pend["limit"]
+        fill = (t + 60000, L + 0.01, L + 0.03, L - 0.02, L + 0.01, 100.0)
+        sc._bar("BTCUSDT", self.inst, hist + [fill], self.s.cfg["scalp"])
+        return sc, hist, fill, t, self.s.positions()[self.inst["id"]]
+
+    def test_stop_pays_taker_plus_slippage(self):
+        sc, hist, fill, t, pos = self._filled()
+        crash = (t + 120000, pos["entry"], pos["entry"] + 0.01, pos["stop"] - 0.3, pos["stop"] - 0.1, 100.0)
+        sc._bar("BTCUSDT", self.inst, hist + [fill, crash], self.s.cfg["scalp"])
+        tr = self.s.trades(1)[0]
+        self.assertEqual(tr["reason"], "stop")
+        self.assertAlmostEqual(tr["exit"], pos["stop"] * (1 - 0.0006), places=6)                  # taker 5 bps + slippage 1 bp
+        self.assertLess(tr["pnl"], 0)
+
+    def test_time_stop_closes_a_stale_scalp(self):
+        sc, hist, fill, t, pos = self._filled()
+        bars, closed = hist + [fill], False
+        for i in range(2, 14):
+            b = (t + 60000 * i, pos["entry"], pos["entry"] + 0.02, pos["entry"] - 0.02, pos["entry"], 100.0)
+            bars = bars + [b]
+            sc._bar("BTCUSDT", self.inst, bars, self.s.cfg["scalp"])
+            if not self.s.positions():
+                closed = True
+                break
+        self.assertTrue(closed)
+        self.assertEqual(self.s.trades(1)[0]["reason"], "time")                                    # no scalp is ever left hanging
+
+    def test_daily_cap_and_auto_pause(self):
+        sc = self.mk(max_trades_day=0)
+        hist = self.dump_series()
+        sc._bar("BTCUSDT", self.inst, hist, self.s.cfg["scalp"])
+        self.assertEqual(sc.pend, {})                                                              # cap of 0 trades a day: it never even places an order
+        sc = self.mk(auto_pause=True, auto_pause_trades=5)
+        for k in range(6):
+            self.s.add_trade(inst="scalp:x", symbol="BTCUSDT", side=1, qty=1.0, entry=100.0, exit=99.9, pnl=-0.1, fees=0.07, t_open=10 ** 12 + k, t_close=10 ** 12 + k + 1, reason="stop", source="scalp", mode="paper")
+        sc._after_close()
+        self.assertFalse(self.s.cfg["scalp"]["enabled"])                                           # it switches itself off when it is losing after fees
+        self.assertIn("paused itself", [x["msg"] for x in self.s.events(5) if x["level"] == "error"][0])
+
+    def test_stats_and_breakeven_readout(self):
+        from tradebot import scalper
+        sc = self.mk()
+        self.assertEqual(scalper.stats(self.s)["n"], 0)
+        for k in range(30):
+            win = k % 2 == 0
+            self.s.add_trade(inst="scalp:x", symbol="BTCUSDT", side=1, qty=1.0, entry=100.0, exit=100.03 if win else 99.95, pnl=0.03 if win else -0.05, fees=0.06, t_open=10 ** 12 + k * 100, t_close=10 ** 12 + k * 100 + 50, reason="target", source="scalp", mode="paper")
+        st = scalper.stats(self.s)
+        self.assertEqual(st["n"], 30)
+        self.assertAlmostEqual(st["win"], 50.0)
+        self.assertAlmostEqual(st["fee_bps"], 6.0, places=3)
+        be = scalper.breakeven(st, self.s.cfg["scalp"])
+        self.assertIn("break even", be["msg"])
+
+
+class PlaybookTests(unittest.TestCase):
+    def build_crypto(self, disp_vol=300.0, flat_4h=False):
+        import math
+        n = 200
+        p = [100 + 0.02 * i + 0.3 * math.sin(i * math.pi / 4) for i in range(n)]
+        o, h, l, c, v = [], [], [], [], []
+        for i in range(n):
+            op = p[i - 1] if i else p[0]
+            o.append(op); c.append(p[i]); h.append(max(op, p[i]) + 0.05); l.append(min(op, p[i]) - 0.05); v.append(100.0)
+        j = 190                                                                       # sweep: dips below every recent trough, closes back inside
+        l[j] = min(l[170:190]) - 0.5
+        c[j] = p[j] + 0.25; h[j] = c[j] + 0.05; o[j] = p[j - 1]
+        for k in range(191, 192):
+            o[k], c[k], h[k], l[k] = c[j], c[j] + 0.1, c[j] + 0.15, c[j] - 0.05
+        m = 192                                                                       # displacement: big body, breaks the structure, 3x volume
+        o[m] = c[191]; c[m] = max(h[j:m]) + 0.9; h[m] = c[m] + 0.05; l[m] = o[m] - 0.05; v[m] = disp_vol
+        ext, leg_hi = l[j], h[m]
+        mid = (ext + leg_hi) / 2
+        for k in range(193, 199):                                                     # drift back toward the middle of the move
+            o[k] = c[k - 1]; c[k] = mid + 0.9 - (k - 193) * 0.12; h[k] = max(o[k], c[k]) + 0.05; l[k] = min(o[k], c[k]) - 0.05
+        o[199], l[199], c[199], h[199] = c[198], mid - 0.1, mid + 0.3, c[198] + 0.05    # last bar dips into the lower half and is rejected
+        t0 = 1_790_000_000_000
+        h15 = [(t0 + i * 900000, o[i], h[i], l[i], c[i], v[i]) for i in range(n)]
+        base = [100 + (0.0 if flat_4h else 0.4) * i for i in range(120)]
+        h4 = [(t0 + i * 14400000, b, b + 0.5, b - 0.5, b + (0.0 if flat_4h else 0.2), 100.0) for i, b in enumerate(base)]
+        return h15, h4, ext
+
+    def test_full_confirmation_sequence_gives_a_setup(self):
+        from tradebot import playbook
+        h15, h4, ext = self.build_crypto()
+        setup, msg = playbook.crypto_setup(h15, h4, playbook.DEFAULTS)
+        self.assertIsNotNone(setup, msg)
+        self.assertEqual(setup["side"], 1)
+        self.assertLess(setup["stop"], ext)                                                        # stop sits beyond the sweep extreme
+        self.assertGreaterEqual((setup["target"] - setup["entry_ref"]) / (setup["entry_ref"] - setup["stop"]), 2.0 - 1e-9)
+        self.assertLessEqual((setup["target"] - setup["entry_ref"]) / (setup["entry_ref"] - setup["stop"]), 4.0 + 1e-9)
+        self.assertTrue(any("sweep" in r or "swept" in r for r in setup["reasons"]))
+
+    def test_it_never_jumps_in_early(self):
+        from tradebot import playbook
+        h15, h4, _ = self.build_crypto(disp_vol=100.0)                                             # the move had no volume: the big players did not act
+        setup, msg = playbook.crypto_setup(h15, h4, playbook.DEFAULTS)
+        self.assertIsNone(setup); self.assertIn("confirmed the move", msg)
+        h15, h4, _ = self.build_crypto()
+        setup, msg = playbook.crypto_setup(h15[:-1], h4, playbook.DEFAULTS)                         # without the final rejection candle: still waiting (no chasing)
+        self.assertIsNone(setup); self.assertIn("pullback", msg)
+        h15, h4, _ = self.build_crypto(flat_4h=True)
+        setup, msg = playbook.crypto_setup(h15, h4, playbook.DEFAULTS)
+        self.assertIsNone(setup); self.assertIn("not clear", msg)
+
+    def test_stock_opening_range_rules(self):
+        from tradebot import playbook
+        cfg = playbook.DEFAULTS
+        prior = [1000.0] * 10
+
+        def day(first_vol, last_close, below_vwap=False):
+            bars = [(570 + 5 * i, 100.0, 100.4, 99.8, 100.2, first_vol / 3) for i in range(3)]               # opening range 99.8 .. 100.4
+            bars += [(585, 100.2, 100.3, 100.0, 100.1, 200.0), (590, 100.1, last_close + 0.1, 100.1, last_close, 400.0)]
+            return bars
+        spy = [(570, 400.0, 401.0, 399.0, 400.5, 1.0), (575, 400.5, 402.0, 400.0, 401.5, 1.0)]
+        setup, msg = playbook.stock_setup(day(2500.0, 100.9), prior, spy, cfg)
+        self.assertIsNotNone(setup, msg)
+        self.assertEqual(setup["side"], 1); self.assertLess(setup["stop"], 99.9)
+        self.assertIsNone(playbook.stock_setup(day(1200.0, 100.9), prior, spy, cfg)[0])           # ordinary volume: the big players are not here
+        self.assertIsNone(playbook.stock_setup(day(2500.0, 100.2), prior, spy, cfg)[0])           # no close beyond the range yet: wait
+        self.assertIn("index", playbook.stock_setup(day(2500.0, 100.9), prior, [(570, 400.0, 400.0, 398.0, 399.0, 1.0)], cfg)[1])
+
+    def test_market_hours_and_dst(self):
+        from tradebot import playbook
+        import calendar
+        ts = lambda *a: calendar.timegm(a)
+        self.assertEqual(playbook.market_open_et(ts(2026, 10, 12, 14, 0, 0)), (True, 30))          # Monday 10:00 EDT
+        self.assertEqual(playbook.market_open_et(ts(2026, 12, 1, 15, 0, 0)), (True, 30))           # Tuesday 10:00 EST (after daylight saving ends)
+        self.assertFalse(playbook.market_open_et(ts(2026, 10, 10, 15, 0, 0))[0])                   # Saturday
+        self.assertFalse(playbook.market_open_et(ts(2026, 10, 12, 12, 0, 0))[0])                   # 08:00 EDT, pre-market
+        self.assertFalse(playbook.market_open_et(ts(2026, 10, 12, 21, 0, 0))[0])                   # 17:00 EDT, after the close
+
+    def test_liquidity_gate_and_footprint_votes(self):
+        from tradebot import playbook, data
+        cfg = dict(playbook.DEFAULTS)
+        real = data._get
+        playbook._cache.clear()
+        data._get = lambda url, timeout=15: ([{"symbol": "AAAUSDT", "quoteVolume": "5000000"}, {"symbol": "BIGUSDT", "quoteVolume": "900000000"}] if "ticker/24hr" in url else
+                                             {"bids": [["100.00", "5000"], ["99.95", "5000"]], "asks": [["100.10", "5000"], ["100.20", "5000"]]})
+        try:
+            self.assertFalse(playbook.liquidity_crypto("AAAUSDT", cfg)["ok"])                      # thin: skipped before any signal is considered
+            lq = playbook.liquidity_crypto("BIGUSDT", dict(cfg, max_spread_bps=20.0))
+            self.assertTrue(lq["ok"], lq)
+            self.assertFalse(playbook.liquidity_crypto("BIGUSDT", dict(cfg, max_spread_bps=5.0))["ok"])    # a 10 bps spread is too wide
+        finally:
+            data._get = real
+            playbook._cache.clear()
+        v = playbook.footprint_votes(dict(oi_chg=0.01, big_flow=0.4, top_chg=0.05), dict(imb=0.3), 1, 0.01)
+        self.assertEqual(len(v), 4)
+        self.assertEqual(playbook.footprint_votes(dict(oi_chg=0.01, big_flow=0.4, top_chg=0.05), dict(imb=0.3), -1, 0.01), [])   # all clues point the other way: no votes
+
+
+class SmartEngineTests(unittest.TestCase):
+    build_crypto = PlaybookTests.build_crypto
+
+    def setUp(self):
+        from tradebot import playbook, smart
+        self.h15, self.h4, self.ext = self.build_crypto()
+        sm = dict(enabled=True, crypto=True, stocks=False, tf="15m", markets=3, min_score=5, max_trades_day=3, rr_min=2.0, risk_pct=0.5, use_ai=False)
+        self.s = mk_store(instruments=[dict(DEFAULTS["instruments"][0])], smart=sm)
+        h15 = self.h15
+
+        def fetch(m, sym, tf, n):
+            return h15 if tf == "15m" else self.h4
+        self.e = Engine(self.s, fetcher=fetch, pricer=lambda m, sym: h15[-1][4])
+        self.e._lot = lambda inst: None
+        self.base = self.s.cfg["instruments"][0]
+        self.playbook = playbook
+        playbook._cache.clear()
+        playbook._cache["vol24"] = (time.time(), {"BTCUSDT": 9e9})
+        playbook._cache["book:BTCUSDT"] = (time.time(), dict(spread_bps=1.0, depth_usd=5e6, imb=0.2))
+        playbook._cache["fp:BTCUSDT"] = (time.time(), dict(oi_chg=0.01, big_flow=0.4, top_chg=0.0))
+
+    def tearDown(self):
+        self.playbook._cache.clear()
+
+    def test_confirmed_setup_opens_with_structure_stop(self):
+        sm = self.e.smart
+        sm._crypto_one(self.base, "BTCUSDT", self.s.cfg["smart"], 900000, {"BTCUSDT": 9e9})
+        pos = self.s.positions()["smart:" + self.base["id"]]
+        self.assertEqual((pos["side"], pos["source"]), (1, "smart"))
+        self.assertLess(pos["stop"], self.ext); self.assertGreater(pos["tp"], pos["entry"])
+        self.assertLessEqual(pos["qty"] * pos["d"], 10000 * 0.005 * 1.01)                         # 0.5% risk
+        self.assertIn("entered long", sm.status["BTCUSDT"][0])
+        self.assertTrue(any(t["kind"] == "candidate" for t in self.s.thoughts(10)))               # the reasoning is visible
+        self.assertEqual(self.e._inst_for("smart:" + self.base["id"])["strategy"], "smart")
+
+    def test_weak_confirmation_or_thin_market_means_no_trade(self):
+        sm = self.e.smart
+        self.s.save_cfg({"smart": {"min_score": 8}})
+        sm._crypto_one(self.base, "BTCUSDT", self.s.cfg["smart"], 900000, {})
+        self.assertEqual(self.s.positions(), {})
+        self.assertIn("confirmations", sm.status["BTCUSDT"][0])
+        self.s.save_cfg({"smart": {"min_score": 5, "min_dollar_vol_m": 1e6}})                    # demand a $1 trillion market: nothing qualifies
+        sm.seen.clear()
+        sm._crypto_one(self.base, "BTCUSDT", self.s.cfg["smart"], 900000, {})
+        self.assertEqual(self.s.positions(), {})
+        self.assertIn("volume", sm.status["BTCUSDT"][0])
+
+    def test_daily_trade_limit(self):
+        sm = self.e.smart
+        self.s.save_cfg({"smart": {"max_trades_day": 0}})
+        sm._crypto_one(self.base, "BTCUSDT", self.s.cfg["smart"], 900000, {})
+        self.assertEqual(self.s.positions(), {})
+        self.assertIn("limit", sm.status["BTCUSDT"][0])
+
+    def test_open_smart_trade_manages_stop_target_and_time(self):
+        sm = self.e.smart
+        sm._crypto_one(self.base, "BTCUSDT", self.s.cfg["smart"], 900000, {"BTCUSDT": 9e9})
+        key = "smart:" + self.base["id"]
+        pos = self.s.positions()[key]
+        self.e.price = lambda m, sym: pos["stop"] - 0.05
+        sm._manage(self.s.cfg["smart"])
+        self.assertEqual(self.s.trades(1)[0]["reason"], "stop")
+        self.assertEqual(self.s.positions(), {})
+
+
+class StyleApi(unittest.TestCase):
+    def test_overview_and_switches(self):
+        srv = ensure_server()
+        before = json.loads(json.dumps(srv.store.cfg))
+        try:
+            srv.store.save_cfg({"mode": "paper"})
+            import urllib.request
+            d = json.loads(urllib.request.urlopen("http://127.0.0.1:18765/api/styles").read())
+            self.assertEqual(set(d), {"trend", "smart", "scalp"})
+            self.assertEqual(d["trend"]["badge"], "Recommended")
+            self.assertTrue(all(k in d["scalp"] for k in ("scalp", "perf", "evidence", "how")))
+            self.assertEqual(srv.style_action({"style": "scalp", "action": "on"})[0], 200)
+            self.assertTrue(srv.store.cfg["scalp"]["enabled"])
+            self.assertEqual(srv.style_action({"style": "scalp", "action": "restart"})[0], 200)
+            self.assertGreater(srv.store.get("scalp_since"), 0)                                     # a fresh scorecard
+            self.assertEqual(srv.style_action({"style": "smart", "action": "on"})[0], 200)
+            self.assertEqual(srv.style_action({"style": "smart", "action": "off"})[0], 200)
+            self.assertFalse(srv.store.cfg["smart"]["enabled"])
+            self.assertEqual(srv.style_action({"style": "nope", "action": "on"})[0], 400)
+            srv.store.cfg["mode"] = "live"
+            self.assertEqual(srv.style_action({"style": "scalp", "action": "on"})[0], 400)          # fast styles are practice-only
+        finally:
+            srv.engine.stop()
+            srv.store.cfg = before
+            srv.store.save_cfg()
+
+
+class AccountingMigration(unittest.TestCase):
+    def test_old_double_charge_is_refunded_once(self):
+        s = mk_store(instruments=[dict(DEFAULTS["instruments"][0])])
+        e = Engine(s, pricer=lambda m, sym: 100.0)
+        # an open position and a closed trade as the old code wrote them: entry fee deducted from cash on top of the price impact
+        old_fee = 100.0 * 10 * 0.0008
+        s.put("cash", 10000.0 - old_fee - 0.65)
+        s.set_position("futures:BTCUSDT:4h#donch20", dict(inst="futures:BTCUSDT:4h#donch20", symbol="BTCUSDT", market="futures", side=1, qty=10.0, entry=100.0, stop=95.0, tp=None, d=5.0, t_open=1, fee_in=old_fee, fund=0.0, source="engine", mark=100.0, mode="paper"))
+        s.add_trade(inst="day:futures:DOGEUSDT:4h", symbol="DOGEUSDT", side=1, qty=9404.0, entry=0.086609232, exit=0.0862, pnl=-4.02, fees=1.30, t_open=1, t_close=2, reason="stop", source="day", mode="paper")
+        before = e.cash()
+        refund = e.migrate_accounting()
+        self.assertAlmostEqual(refund, old_fee + 9404.0 * 0.086609232 * 0.0008, places=6)
+        self.assertAlmostEqual(e.cash(), before + refund, places=6)
+        self.assertEqual(s.positions()["futures:BTCUSDT:4h#donch20"]["acct"], 2)
+        self.assertGreater(s.trades(1)[0]["pnl"], -4.02)
+        self.assertEqual(e.migrate_accounting(), 0.0)                                        # it only ever happens once
+        self.assertTrue(any("Accounting corrected" in x["msg"] for x in s.events(5)))
 
 
 if __name__ == "__main__":

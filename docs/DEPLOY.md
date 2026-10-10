@@ -1,5 +1,7 @@
 # Putting Sentinel on a website (subdomain)
 
+> **Using Cloudflare?** Follow **[DEPLOY_CLOUDFLARE.md](DEPLOY_CLOUDFLARE.md)** instead (Cloudflare Tunnel: no open ports, free https). Cloudflare Pages itself cannot run the bot; that guide explains why and what to use.
+
 This guide takes Sentinel from "runs on one computer" to `https://sentineltrade.axiominternational.ca`, protected by a login.
 It assumes a small Linux server (Ubuntu 22.04 or newer, 1 GB of RAM is plenty). No databases or packages to install: Sentinel is plain Python.
 

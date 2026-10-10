@@ -372,19 +372,19 @@ $("#acctChip").onclick = e => S && openAcct(e.currentTarget);
 $("#aiChip").onclick = e => S && openAI(e.currentTarget);
 
 /* ---------- router, nav, command palette */
-const PAGES = [["portfolio", "layout-dashboard", "Home", 0], ["trade", "chart-candlestick", "Markets", 0], ["trader", "bot", "Trader", 0], ["lab", "flask-conical", "Lab", 1], ["ai", "sparkles", "AI helper", 0], ["help", "circle-help", "Help", 0], ["settings", "settings", "Settings", 0]];
+const PAGES = [["portfolio", "layout-dashboard", "Home", 0], ["trade", "chart-candlestick", "Markets", 0], ["strategies", "layers", "Strategies", 0], ["trader", "bot", "Trader", 0], ["lab", "flask-conical", "Lab", 1], ["ai", "sparkles", "AI helper", 0], ["help", "circle-help", "Help", 0], ["settings", "settings", "Settings", 0]];
 $("#nav").insertAdjacentHTML("beforeend", PAGES.map(p => `<button data-p="${p[0]}" data-label="${p[2]}" aria-label="${p[2]}" class="${p[3] ? "pro" : ""}"><svg class="i" data-i="${p[1]}"></svg></button>`).join(""));
 function moveNav() { const b = $(".nav button.on"), th = $(".nav .thumb"); if (!b || !b.offsetParent) { th.style.opacity = 0; return; } th.style.opacity = 1; th.style.transform = `translateY(${b.offsetTop}px)`; }
 function go(p) {
   const meta = PAGES.find(x => x[0] === p); if (!meta || (meta[3] && simple)) p = "portfolio";
   if (p === page && S) return; const run = () => {
     page = p; $$(".page").forEach(e => e.classList.toggle("on", e.id === "p-" + p)); $$(".nav button").forEach(b => b.classList.toggle("on", b.dataset.p === p)); $("#title").textContent = PAGES.find(x => x[0] === p)[2]; moveNav(); $("#views").scrollTop = 0;
-    if (!S) return; ({ trade: () => { renderTrade(); loadChart(); }, portfolio: () => { renderPortfolio(); drawEq(); }, lab: () => { if (!$("#lInst")) buildLab(); }, trader: () => renderTrader(), ai: () => renderAI(true), help: () => renderHelp(), settings: () => fillSettings(true) })[p]();
+    if (!S) return; ({ trade: () => { renderTrade(); loadChart(); }, portfolio: () => { renderPortfolio(); drawEq(); }, lab: () => { if (!$("#lInst")) buildLab(); }, strategies: () => STRAT.render(), trader: () => renderTrader(), ai: () => renderAI(true), help: () => renderHelp(), settings: () => fillSettings(true) })[p]();
   }; swap(run);
 }
 $$(".nav button").forEach(b => b.onclick = () => go(b.dataset.p));
 function openCmd() {
-  const acts = [["Go to Home", "layout-dashboard", () => go("portfolio")], ["Go to Markets", "chart-candlestick", () => go("trade")], ...(simple ? [] : [["Go to Strategy Lab", "flask-conical", () => go("lab")]]), ["Go to Trader (day trading + chat)", "bot", () => go("trader")], ["Go to AI helper", "sparkles", () => go("ai")], ["Add a market", "list", () => openAdd()], ["Connect an AI", "sparkles", () => openAI()], ["Go to Help", "circle-help", () => go("help")], ["Go to Settings", "settings", () => go("settings")],
+  const acts = [["Go to Home", "layout-dashboard", () => go("portfolio")], ["Go to Markets", "chart-candlestick", () => go("trade")], ["Go to Strategies (trend, smart-money, scalper)", "layers", () => go("strategies")], ...(simple ? [] : [["Go to Strategy Lab", "flask-conical", () => go("lab")]]), ["Go to Trader (day trading + chat)", "bot", () => go("trader")], ["Go to AI helper", "sparkles", () => go("ai")], ["Add a market", "list", () => openAdd()], ["Connect an AI", "sparkles", () => openAI()], ["Go to Help", "circle-help", () => go("help")], ["Go to Settings", "settings", () => go("settings")],
     ["Take the guided tour", "circle-help", () => startTour(0)], ["Re-run the setup guide", "list", () => openWizard()],
     [S.engine.running ? "Pause trading" : "Run trading", S.engine.running ? "pause" : "play", () => engineAct(S.engine.running ? "stop" : "start")], ["Change account size and risk", "wallet", () => openAcct()], [simple ? "Switch to Pro mode" : "Switch to Simple mode", "sliders-horizontal", () => { simple = !simple; LS.set("simple", simple ? "1" : "0"); applyView(); }],
     ...insts().map(i => ["Open " + short(i) + " chart", "trending-up", () => { sel = i.id; go("trade"); if (page === "trade") { renderTrade(); loadChart(); } }])];
@@ -399,7 +399,7 @@ $("#searchBtn").onclick = openCmd;
 document.addEventListener("keydown", e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); sheetOpen ? closeSheet() : S && openCmd(); return; }
   if (e.key === "Escape") closeSheet(); if (/INPUT|TEXTAREA|SELECT/.test((document.activeElement || {}).tagName) || e.ctrlKey || e.metaKey || sheetOpen) return;
-  const vis = PAGES.filter(p => !(simple && p[3])), k = "1234567".indexOf(e.key); if (k >= 0 && vis[k]) go(vis[k][0]);
+  const vis = PAGES.filter(p => !(simple && p[3])), k = "12345678".indexOf(e.key); if (k >= 0 && vis[k]) go(vis[k][0]);
 });
 const engineAct = guard(async a => { await api("/api/engine", { action: a }); await refresh(); });
 seg($("#engSeg"), v => engineAct(v === "run" ? "start" : "stop"));
@@ -421,6 +421,7 @@ function tick() {
   if (n - tk.ch > 30000) { tk.ch = n; if (page === "trade" && S) loadChart(); }
   if (n - tk.eq > 30000) { tk.eq = n; if (page === "portfolio" && S) drawEq(); }
   if (page === "ai" && S) renderAI();
+  if (page === "strategies" && S) STRAT.poll();
   if (page === "trader" && S) thPoll();
 }
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { tk = { st: 0, ch: 0, sp: 0, eq: 0 }; tick(); } });

@@ -291,6 +291,25 @@ def preset_action(b):
     return 200, {"ok": True}
 
 
+def style_action(b):
+    """Switch a bot style on or off; the scalper's 'restart' clears its auto-pause and starts a fresh scorecard."""
+    sid, act = b.get("style"), b.get("action")
+    if sid not in ("trend", "smart", "scalp") or act not in ("on", "off", "restart"):
+        return 400, {"error": "bad request"}
+    if sid in ("smart", "scalp") and act in ("on", "restart") and store.cfg["mode"] == "live":
+        return 400, {"error": "this style runs in practice mode only; switch the account to Paper mode first"}
+    if sid == "trend":
+        engine.start() if act == "on" else engine.stop()
+    else:
+        if sid == "scalp" and act == "restart":
+            store.put("scalp_since", int(time.time() * 1000))
+            engine.scalper.pend.clear()
+        store.save_cfg({sid: {"enabled": act != "off"}})
+        if act != "off" and not engine.running and not engine.halted():
+            engine.start()
+    return 200, {"ok": True}
+
+
 def _ai_cfg(b):
     """Saved AI settings overlaid with whatever the form currently holds (so 'Test' works before 'Save'). A blank key means 'use the saved one'."""
     cfg = dict(store.cfg["ai"])
@@ -329,6 +348,9 @@ class H(BaseHTTPRequestHandler):
         return TRUST_PROXY or self.client_address[0] in ("127.0.0.1", "::1")
 
     def _ip(self):
+        cf = self.headers.get("CF-Connecting-IP")                  # Cloudflare (or its tunnel) always sets this to the real visitor
+        if cf and self._peer_trusted():
+            return cf.strip()[:64]
         xff = self.headers.get("X-Forwarded-For")
         if xff and self._peer_trusted():
             return xff.split(",")[-1].strip()[:64]            # the address our own proxy appended (the last one cannot be forged by the client)
@@ -413,6 +435,9 @@ class H(BaseHTTPRequestHandler):
         try:
             if u.path == "/healthz":
                 return self._send(200, {"ok": True})
+            if u.path == "/api/styles":
+                from tradebot import styles
+                return self._send(200, styles.overview(store, engine))
             if u.path == "/api/health":
                 from tradebot import health
                 items = health.checks(store, engine, dict(auth=auth_on(), public=bool(PUBLIC_HOSTS), https=self._https(), exposed=BIND_HOST not in ("127.0.0.1", "localhost", "::1")))
@@ -630,6 +655,8 @@ class H(BaseHTTPRequestHandler):
             return speed_action(b)
         if path == "/api/preset":
             return preset_action(b)
+        if path == "/api/style":
+            return style_action(b)
         if path == "/api/watchlist":
             return watchlist_action(b)
         if path == "/api/reset":

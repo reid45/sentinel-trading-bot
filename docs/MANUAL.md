@@ -196,7 +196,17 @@ The **chart** has a timeframe switcher (1m, 5m, 15m, 1h, 4h, 1d). The **swing bo
 
 Our research (real candles, after fees, slippage and funding, judged on unseen data) found that the default trend mix earned about **+13% and +19% in two separate year-long windows with a worst dip of 8-15%**, from about 12-14 trades a week. That is a modest, real edge, not a get-rich-quick machine, and it comes from a market regime that may not repeat. Expect losing months and drawdowns of 10-20%. Faster trading did not work in any test. Read [STRATEGY_STUDY.md](STRATEGY_STUDY.md) for every number and how to reproduce it.
 
-## 14. Make it yours (Settings)
+## 14. Choosing how the bot trades (Strategies page)
+
+Open **Strategies** in the left bar. There are three styles, each with an on/off switch, its own settings and its own scorecard (trades, win rate, profit, open positions). You can run several at once; they share your practice account but never share a trade.
+
+- **Trend following (recommended).** The slow, tested style from section 4. Presets: Cautious, Trend mix, Bold.
+- **Smart-money day trader (experimental).** Patient and selective, at most 3 trades a day. For every market it first checks **liquidity** (24-hour volume, spread, order-book depth; for stocks the daily dollar volume) and skips thin ones. It never anticipates: it waits for the trend (4-hour), then for the big players to **sweep** a pool of stops, then for a strong high-volume candle that proves they acted, then for a **pullback that gets rejected**, and only then enters, with the stop beyond the sweep and the target at the next pool of liquidity (at least 2x the risk). It also reads **big-player footprints** (open interest, top-trader positioning, large trades, order-book lean). You choose the markets, how many confirmations it needs (out of 7), the daily limit, risk per trade, and whether your AI gives a final yes/no. The table underneath always says what each market is waiting for. For US stocks it uses the 15-minute opening-range breakout with high relative volume, above the day's average price, with the index agreeing, and is flat before the close.
+- **Scalper (experimental, practice mode only).** Many tiny, fast trades on 1-minute candles: it places resting **limit orders** a little beyond a stretched price, aims for a tiny profit and gets out within minutes (default 10). Everything is yours to set: the **fee tier** (maker, taker, slippage in basis points; 1 bp = 0.01%), risk per scalp, daily trade cap, daily loss limit, target, stop, coins. Fills are simulated strictly (your order must be traded *through*), so results are not flattering. The **fee check** shows your average trade before fees, the fees, and how far fees must fall to break even. If its last 40 trades average below zero it switches itself off; press *Restart with a fresh scorecard* after changing something.
+
+**Be honest with yourself about the two experimental styles.** In our tests both lost money (details in [STRATEGY_STUDY.md](STRATEGY_STUDY.md)). They are included so you can try them on practice money with your own fee tier and see the real result, not to promise profit.
+
+## 15. Make it yours (Settings)
 
 Open **Settings** and scroll to the cards below. Changes apply immediately.
 
@@ -204,12 +214,12 @@ Open **Settings** and scroll to the cards below. Changes apply immediately.
 - **Trading rules**: only trade at certain UTC hours and weekdays; long-only or short-only; a daily trade limit; a cool-down after closing a coin; a pause after a run of stop-outs; a cap on total day-trade risk. When a rule blocks a trade the Trader page says exactly why.
 - **Alerts**: paste a Discord, Slack or generic webhook URL (or a Telegram bot token and chat id) and press *Send a test*. You get a message when trades open or close or something needs attention.
 
-## 15. Sign-in and putting it on a website
+## 16. Sign-in and putting it on a website
 
 - On your own computer sign-in is **optional**. Turn it on in Settings, *Sign-in and accounts* (choose a username and a password of 10+ characters). The first account is the **Owner**. Owners can add **View-only** people who can watch but not trade, change settings or see keys.
-- To host it on a website with its own address (for example a subdomain), follow [DEPLOY.md](DEPLOY.md). Sign-in is then always on, and creating the first owner needs a one-time setup code from the server.
+- To host it on a website with its own address (for example a subdomain), follow [DEPLOY_CLOUDFLARE.md](DEPLOY_CLOUDFLARE.md) if the domain is on Cloudflare (Cloudflare Pages itself cannot run the bot; a Cloudflare Tunnel can publish it), or [DEPLOY.md](DEPLOY.md) for a server with Caddy or nginx. Sign-in is then always on, and creating the first owner needs a one-time setup code from the server.
 - Forgot your password? On the computer running Sentinel: `python sentinel.py passwd <username>`.
 
-## 16. The Health chip
+## 17. The Health chip
 
 The chip next to the status at the top turns amber or red when something needs attention and lists, in plain English, what is wrong and what to do (price feed down, AI not connected, trading halted, no login on a public address, and more). `python sentinel.py doctor` tests every price feed from the machine it runs on.
