@@ -44,8 +44,11 @@ def checks(store, engine, deploy=None):
     if other:
         k, e = next(iter(other.items()))
         out.append(_c("warn" if len(other) < max(3, len(snap["status"]) // 4) else "bad", "%d market(s) have a data problem" % len(other), "%s: %s" % (k.split(":")[1], e), "Usually temporary. If it persists: `sentinel.py doctor`."))
+    rate = data.calls_last_minute()
+    if rate > 900:
+        out.append(_c("warn", "Many data requests (%d in the last minute)" % rate, "Binance allows about 2,400 weight per minute; staying far below it avoids a temporary ban.", "Watch fewer markets, or switch the scalper off."))
     if not bad and ban <= 0:
-        out.append(_c("ok", "Market data healthy", "All %d markets are updating." % len(snap["status"])))
+        out.append(_c("ok", "Market data healthy", "All %d markets are updating (%d data requests in the last minute)." % (len(snap["status"]), rate)))
 
     # --- positions
     if snap["drawdown_pct"] > cfg["risk"]["max_drawdown_halt_pct"] * 0.6:
@@ -62,6 +65,19 @@ def checks(store, engine, deploy=None):
         out.append(_c("ok" if ok else "warn", "AI connected" if ok else "AI spending cap reached", "%s: %d calls and $%.3f today." % (ai.get("provider"), sp["calls_day"], sp["usd_day"]) + ("" if ok else " " + why), "" if ok else "Raise the cap on the AI page if you want it to continue."))
         if time.time() < analyst._breaker["until"]:
             out.append(_c("warn", "AI paused after errors", "Several AI calls failed in a row; it retries automatically.", "Check the key and balance on the AI page."))
+
+    # --- settings that run against the research
+    fast = sorted({i["tf"] for i in cfg["instruments"] if i["market"] == "futures" and i["tf"] in ("1m", "5m", "15m", "1h")})
+    if fast:
+        out.append(_c("warn", "The swing bot is running on %s candles" % "/".join(fast),
+                      "In our tests every strategy lost money after fees at this speed; only 4-hour candles were profitable. Faster means more trades and more fees, not more profit.",
+                      "Strategies page, Trend mix preset: it restores 4-hour candles and the tested 0.3% risk (open swing trades are closed first)."))
+    rk = cfg["risk"]["per_trade_pct"]
+    if rk >= 1.0:
+        out.append(_c("warn", "Risk per trade is %.1f%%" % rk,
+                      "The tested setup risks 0.3%%. With up to %d open trades, a run of stop-outs could cost about %.0f%% of the account before the daily-loss limit (%.0f%%) stops new trades." % (
+                          cfg["risk"]["max_positions"], min(cfg["risk"]["max_positions"] * rk, 100), cfg["risk"]["daily_loss_limit_pct"]),
+                      "Account chip at the top, choose Careful or Balanced, or apply the Trend mix preset."))
 
     # --- rules and activity
     if cfg["rules"]["hours"]["enabled"]:

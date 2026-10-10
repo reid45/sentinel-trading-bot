@@ -5,6 +5,15 @@ DATA_DIR = os.environ.get("TRADEBOT_DATA") or os.path.join(os.path.dirname(os.pa
 TF_MS = {"1m": 60000, "5m": 300000, "15m": 900000, "1h": 3600000, "4h": 14400000, "1d": 86400000}
 UA = {"User-Agent": "Mozilla/5.0"}
 
+import collections
+CALLS = collections.deque(maxlen=5000)       # timestamps of recent network requests: the health panel shows the rate so rate-limit headroom is visible
+
+
+def calls_last_minute():
+    now = time.time()
+    return sum(1 for t in list(CALLS) if now - t < 60)
+
+
 _ban = {"until": 0.0}                       # Binance answered 418/429: stay off the network until this time so the ban is never extended
 _pace = {"lock": threading.Lock(), "t": 0.0}
 
@@ -23,6 +32,7 @@ def _get(url, timeout=15):
         raise RuntimeError("Binance asked us to slow down; paused for another %ds" % (_ban["until"] - time.time()))
     for attempt in range(3):
         try:
+            CALLS.append(time.time())
             return json.loads(urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=timeout).read())
         except urllib.error.HTTPError as e:
             if e.code in (418, 429):
@@ -155,8 +165,27 @@ def fetch_recent(market, symbol, tf, limit=500, forming=False):
     return [r for r in rows if r[0] + TF_MS[tf] <= end][-limit:]
 
 
+_px = {"t": 0.0, "d": {}, "lock": threading.Lock()}
+
+
+def all_prices(max_age=5.0):
+    """Every Binance perp price in ONE request (cached a few seconds). 38 coins polled one by one cost 38 requests; this costs 1."""
+    with _px["lock"]:
+        if time.time() - _px["t"] > max_age:
+            rows = _get("https://fapi.binance.com/fapi/v1/ticker/price")
+            _px["d"], _px["t"] = {r["symbol"]: float(r["price"]) for r in rows}, time.time()
+        return _px["d"]
+
+
 def last_price(market, symbol):
     if market == "futures":
+        try:
+            p = all_prices().get(symbol)
+            if p:
+                LAST_SRC["futures"] = "Binance"
+                return p
+        except Exception:
+            pass
         try:
             p = float(_get("https://fapi.binance.com/fapi/v1/ticker/price?symbol=%s" % symbol)["price"])
             LAST_SRC["futures"] = "Binance"

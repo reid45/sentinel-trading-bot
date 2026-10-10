@@ -165,7 +165,7 @@ def portfolio(runs, equity0=10000.0):
     return ts, [equity0 + x for x in total]
 
 
-def portfolio_run(universe, tf="4h", equity0=10000.0, risk=0.005, max_pos=6, max_lev=3.0, lev_per=3.0, market="futures", start=None, end=None, rev_ok=True, brake=None):
+def portfolio_run(universe, tf="4h", equity0=10000.0, risk=0.005, max_pos=6, max_lev=3.0, lev_per=3.0, market="futures", start=None, end=None, rev_ok=True, brake=None, max_per_coin=0, dir_cap=0, gate=None):
     """Event-driven multi-market backtest with ONE shared account, the way the live engine behaves:
     universe = list of (symbol, candles, strat_name, params) in priority order (earlier = first pick when slots are scarce).
     Signals at a bar's close fill at the next open of that market; each entry risks `risk` of current equity (fees included), is skipped when
@@ -204,6 +204,12 @@ def portfolio_run(universe, tf="4h", equity0=10000.0, risk=0.005, max_pos=6, max
                     eq = cash + sum(x["pos"]["side"] * ((x["last"] or x["pos"]["entry"]) - x["pos"]["entry"]) * x["pos"]["qty"] - x["pos"]["fund"] for x in live)
                     entry = o * (1 + fee * sd)
                     d = (entry - spx) * sd if spx is not None else d
+                    if max_per_coin and sum(1 for x in live if x["sym"] == b["sym"]) >= max_per_coin:
+                        d = 0                                      # too much on one coin already
+                    elif dir_cap and sum(1 for x in live if x["pos"]["side"] == sd) >= dir_cap:
+                        d = 0                                      # too many trades betting the same way
+                    elif gate is not None and not gate(b["sym"], sd, t):
+                        d = 0                                      # outside the allowed market regime
                     if d and d > 0 and len(live) < max_pos:
                         peak = max(peak, eq)
                         mult = 1.0

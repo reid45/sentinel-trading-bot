@@ -59,6 +59,8 @@ def overview(store, engine):
             mix = [i for i in cfg["instruments"] if i.get("strategy") == "trendmix" and i.get("enabled", True)]
             d["enabled"] = bool(engine.running)
             d["coins"] = len(mix)
+            tfs = sorted({i["tf"] for i in cfg["instruments"] if i["market"] == "futures"})
+            d["settings"] = dict(tf="/".join(tfs), risk=cfg["risk"]["per_trade_pct"], off_plan=bool(set(tfs) - {"4h", "1d"}) or cfg["risk"]["per_trade_pct"] >= 1.0)
         elif sid == "smart":
             d["enabled"] = bool(cfg["smart"]["enabled"])
             d["status"] = {k: dict(text=v[0], t=v[1]) for k, v in engine.smart.status.items()}

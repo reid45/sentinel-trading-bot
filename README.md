@@ -3,7 +3,7 @@
 **An autonomous crypto and forex trading bot with a TradingView-style dashboard, sign-in for hosting on your own domain, a research-backed trend strategy, and a token-lean AI analyst.**
 Created by Reid. Pure Python standard library on the server, plain JavaScript in the browser: no dependencies to install, no build step, no paid services required.
 
-![Python](https://img.shields.io/badge/python-3.7%2B-blue) ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen) ![Tests](https://img.shields.io/badge/tests-90%20passing-brightgreen) ![License](https://img.shields.io/badge/license-MIT-lightgrey) ![Mode](https://img.shields.io/badge/default%20mode-paper%20trading-blueviolet)
+![Python](https://img.shields.io/badge/python-3.7%2B-blue) ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen) ![Tests](https://img.shields.io/badge/tests-97%20passing-brightgreen) ![License](https://img.shields.io/badge/license-MIT-lightgrey) ![Mode](https://img.shields.io/badge/default%20mode-paper%20trading-blueviolet)
 
 > **Disclaimer.** Sentinel is educational software, not financial advice. It starts in practice (paper) mode and has never been run against a real-money account. Past performance does not predict future results. You can lose money trading.
 
@@ -31,6 +31,8 @@ The first launch opens a **setup wizard** (practice balance, risk level, optiona
 - **Make it yours**: light, dark or auto theme, accent colour, colour-blind-safe price colours, density, text size, corner roundness, currency symbol, 12/24-hour clock, landing page, app name, and which Home sections show.
 - **Alerts**: Discord, Slack, Telegram or any webhook when a trade opens or closes or something needs attention.
 - **Health panel + `doctor`**: one chip tells you what is wrong in plain English and how to fix it (data feed, AI, loop, security); `python sentinel.py doctor` tests every price feed from the machine it runs on.
+- **Light on the network**: responses are gzip-compressed (the 58 KB dashboard state polls as about 8 KB), versioned app files are cached for a year, every Binance perp price comes from **one** request instead of one per coin, the database is indexed and old equity detail is thinned, and the Health chip shows your data-request rate.
+- **Knows your balance**: the Strategies page says which coins your account is too small to trade (exchanges set minimum order sizes) and what balance each needs, instead of leaving you to wonder why BTC never trades.
 - **Resilient data**: Binance futures, then Bybit, then Binance spot as automatic backups; pauses itself during a rate-limit ban instead of extending it; ignores frozen or delisted contracts.
 - **Switchable timeframes**: chart timeframe 1m to 1d; the swing bot's own timeframe from Settings (4h is the only one that tested profitable).
 - **15 AI providers**, one obvious place for the key (top-bar AI chip): DeepSeek, Gemini, Groq, Cerebras, OpenAI, Anthropic Claude, xAI Grok, OpenRouter, Together, Fireworks, Mistral, Ollama, LM Studio, any OpenAI-compatible URL, and the Claude CLI, with live model lists and plain-English error messages.
@@ -112,7 +114,7 @@ flowchart LR
 | `research/` | - | The strategy studies and their results (reproducible) |
 | `deploy/`, `Dockerfile`, `docker-compose.yml` | - | Caddy, nginx, systemd and Docker files for hosting |
 | `sentinel.py` | 220 | Command line: control, `doctor`, `health`, `passwd`, `auth-off` |
-| `tests.py` | ~1,100 | 90 tests (see below) |
+| `tests.py` | ~1,100 | 97 tests (see below) |
 
 ## Trading logic (specification)
 
@@ -189,7 +191,7 @@ Design goals: *accurate inputs, minimal tokens, bounded spend, never in the crit
 
 ## Testing
 
-`python tests.py` runs **90 tests in about 45 s**, none of which can touch a real AI API or exchange (mock servers are used):
+`python tests.py` runs **97 tests in about 55 s**, none of which can touch a real AI API or exchange (mock servers are used):
 
 scalper (limit fills only when traded through, maker vs taker costs, stops, time exit, daily cap, auto-pause) · smart-money playbook (never enters early, structure stop, 2R-4R target, liquidity gate, DST-aware market hours, stock opening range) · style API · entry fee charged once · indicators and backtester sanity (costs hurt, stops bound losses) · live-engine replay equals backtester · shared-account portfolio simulator respects max open trades · trend-mix sleeves open/close independently · accounting reconciliation to the cent · risk limits, kill switch, daily-loss and drawdown guards · entry rules (hours, direction, caps, cool-down, stop-out pause) · tiny-account lot-size rules · dead-contract guard · data fallback and ban protection · alerts (payloads, delivery, event routing) · AI evidence tools (causal triggers, costs charged) · webhook auth · Bybit adapter against a signature-verifying mock exchange · AI analyst: prompt-prefix stability, cost math, tool round-trip, budgets, circuit breaker, fail-open, scorecard · accounts, lockout, idle expiry · the full HTTP login flow (first-run code, cookies, CSRF, roles, host checks) · API security (secrets never leave, forwarded requests rejected, traversal blocked) · cache headers · first-run flags.
 

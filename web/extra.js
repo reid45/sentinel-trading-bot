@@ -163,7 +163,7 @@ function buildTrader() {
      <p class="note" style="margin:0 0 10px">The trend mix watches every coin on 4-hour candles and enters when price breaks out. Closest to a trigger first. The next check is when the 4-hour candle closes.</p>
      <div class="grid g5" id="scStats" style="grid-template-columns:repeat(auto-fit,minmax(110px,1fr));margin-bottom:12px"></div><div class="scroll" id="scList" style="max-height:300px"></div></div>
     <div class="card" style="--i:0"><h3>Day trading <span class="pill" id="dState"></span> <span class="pill">experimental</span></h3>
-     <p class="note" style="margin:0 0 14px">Quick trades on <b>15-minute</b> candles. A scanner finds setups, then the AI decides with full market data. Every step appears below.</p>
+     <p class="note" style="margin:0 0 6px">Looking for the patient, liquidity-first style that waits for the big players? That is <a href="#" id="toStrat">Smart-money day trader</a> on the Strategies page.</p><p class="note" style="margin:0 0 14px">Quick trades on <b>15-minute</b> candles. A scanner finds setups, then the AI decides with full market data. Every step appears below.</p>
      <div class="form"><div><label class="f">Markets to watch</label><select id="dMarkets"><option value="3">3 (favorites first)</option><option value="6">6</option><option value="10">10</option><option value="20">20</option></select></div>
       <div><label class="f">How picky is it?</label><select id="dPicky"><option value="50">Relaxed: more trades</option><option value="60">Balanced</option><option value="75">Strict: fewer, higher confidence</option></select></div>
       <div><label class="f">Longest time in a trade</label><select id="dHold"><option value="2">30 minutes</option><option value="4">1 hour</option><option value="8">2 hours</option><option value="12">3 hours</option><option value="16">4 hours</option><option value="24">6 hours</option></select></div></div>
@@ -173,6 +173,7 @@ function buildTrader() {
     <div class="card" style="--i:1"><h3>Live thoughts <span class="sub" id="thN"></span></h3><div class="thoughts" id="thFeed"></div></div></div>
    <div class="card chat" style="--i:2"><h3>Ask the trader <span class="sub">read-only: it can explain, it can't trade</span></h3><div class="msgs" id="chMsgs"></div>
      <div class="sugg" id="chSugg"></div><form id="chForm" class="row" style="flex-wrap:nowrap"><input id="chIn" placeholder="Ask anything: Why did you buy? What are you watching?" autocomplete="off"><button class="btn pri" id="chSend">Send</button></form></div></div></div>`;
+  $("#toStrat").onclick = e => { e.preventDefault(); go("strategies"); };
   const patch = d => api("/api/config", { day: d }, true).then(refresh);
   $("#dMarkets").onchange = e => patch({ markets: +e.target.value }); $("#dPicky").onchange = e => patch({ min_conf: +e.target.value }); $("#dHold").onchange = e => patch({ max_hold_bars: +e.target.value });
   $("#dToggle").onclick = guard(async e => {

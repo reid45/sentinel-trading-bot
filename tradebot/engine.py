@@ -587,6 +587,28 @@ class Engine:
                 c[inst["symbol"]] = None
         return c[inst["symbol"]]
 
+    def affordability(self):
+        """Which crypto coins can this balance actually trade? Exchanges set a minimum order size per coin; at 0.3% risk a typical 4-hour stop (about 8% away)
+        needs this much equity to afford one minimum lot. Cached for an hour. -> dict(equity, risk_pct, ok=[symbols], blocked=[(symbol, equity needed)])"""
+        c = getattr(self, "_afford", None)
+        eq = self.equity()
+        if c and time.time() - c[0] < 3600 and abs(c[1]["equity"] - eq) < eq * 0.02 and c[1]["risk_pct"] == self.s.cfg["risk"]["per_trade_pct"]:
+            return c[1]
+        risk = self.s.cfg["risk"]["per_trade_pct"] / 100
+        ok, blocked = [], []
+        for i in self.s.cfg["instruments"]:
+            if i["market"] != "futures" or not i.get("enabled", True):
+                continue
+            px = (self.status.get(i["id"]) or {}).get("price")
+            lot = self._lot(i)
+            if not px or not lot:
+                continue
+            need = max(lot[1] * px, 5.0) * (0.08 + 0.0016) / risk                # equity at which one minimum order risks exactly the budget
+            (ok if need <= eq else blocked).append((i["symbol"], round(need, -1) if need > 100 else round(need)))
+        out = dict(equity=eq, risk_pct=risk * 100, ok=[s for s, _ in ok], blocked=sorted(blocked, key=lambda x: x[1]))
+        self._afford = (time.time(), out)
+        return out
+
     def set_account(self, amount):
         """Fresh paper account with a chosen starting balance (wipes paper history). Not allowed in exchange mode."""
         if self.live():

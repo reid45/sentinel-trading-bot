@@ -250,6 +250,12 @@ function narrate() {
 }
 function kpi(l, v, s, c, tp) { return `<div class="card kpi"><div class="label">${l}${tp ? ` <span class="q" data-tip="${esc(tp)}">?</span>` : ""}</div><div class="mid ${c || ""}" style="margin-top:6px">${v}</div><div class="sub">${s}</div></div>`; }
 function meter(label, f, text, tp) { const c = f < .5 ? COL.up : f < .8 ? COL.warn : COL.down; return `<div class="mrow" data-tip="${esc(tp)}"><div class="top"><span>${label}</span><span class="num" style="color:${c}">${text}</span></div><div class="meter"><i style="width:${Math.min(100, f * 100).toFixed(1)}%;background:${c}"></i></div></div>`; }
+/* one row per coin and direction: four trend systems on the same coin read as "x3", with their combined profit and the tightest stop */
+function groupPos(ps) {
+  const g = {};
+  ps.forEach(p => { const k = p.symbol + "|" + p.side; const a = g[k] || (g[k] = Object.assign({}, p, { upnl: 0, n: 0, id: p.id, risk_now: 0 })); a.upnl += p.upnl; a.n++; a.risk_now += p.risk_now || 0; if (p.side > 0 ? p.stop > a.stop : p.stop < a.stop) a.stop = p.stop; });
+  return Object.values(g).sort((a, b) => b.n - a.n || b.upnl - a.upnl).map(a => Object.assign(a, { tag: a.n > 1 ? " ×" + a.n : "" }));
+}
 function renderPortfolio() {
   if (!$("#pTotal")) { buildPortfolio(); drawEq(); }
   const e = S.engine, r = S.cfg.risk, ps = e.positions, profit = e.equity - e.start_equity;
@@ -261,7 +267,7 @@ function renderPortfolio() {
   setHTML($("#kpis"), kpiSet(e, r, ps));
   const gross = ps.reduce((a, p) => a + p.qty * (p.mark || p.entry), 0), ex = gross / (e.equity * r.max_total_leverage), dy = Math.max(0, -e.day_pnl_pct) / r.daily_loss_limit_pct, dd = e.drawdown_pct / r.max_drawdown_halt_pct;
   setHTML($("#meters"), meter("Daily loss limit", dy, (dy * 100).toFixed(0) + "% used", "At 100% I stop opening trades until tomorrow.") + meter("Emergency brake", dd, (dd * 100).toFixed(0) + "% of limit", "How far the account has fallen from its peak, compared with the level that closes everything and halts the bot.") + meter("Money in trades", ex, (ex * 100).toFixed(0) + "% of max", "How much of the allowed position size is in use right now."));
-  if (setHTML($("#pPos"), ps.length ? `<table><tr><th>Market</th><th>Side</th><th>Profit now</th><th>Stop</th></tr>${ps.map(p => `<tr><td class="t"><b>${esc(p.symbol.replace("=X", ""))}</b>${p.id && String(p.id).includes("#") ? ` <span class="sub">${esc(String(p.id).split("#")[1])}</span>` : (String(p.id).startsWith("day:") ? ' <span class="sub">day trade</span>' : "")}</td><td>${sidePill(p.side)}</td><td class="${cls(p.upnl)}">${sm(p.upnl)}</td><td>${px(p.stop)}</td></tr>`).join("")}</table>` : '<div class="empty">No open trades right now.</div>')) { }
+  if (setHTML($("#pPos"), ps.length ? `<table><tr><th>Market</th><th>Side</th><th>Profit now</th><th>Stop</th></tr>${groupPos(ps).map(p => `<tr><td class="t"><b>${esc(p.symbol.replace("=X", ""))}</b>${p.tag ? ` <span class="sub">${p.tag.trim()}</span>` : ""}</td><td>${sidePill(p.side)}</td><td class="${cls(p.upnl)}">${sm(p.upnl)}</td><td>${px(p.stop)}</td></tr>`).join("")}</table>` : '<div class="empty">No open trades right now.</div>')) { }
 }
 async function drawEq() {
   if (!PF.series) return; PF.eq = await api("/api/equity", undefined, true); const e = S.engine, now = Date.now();

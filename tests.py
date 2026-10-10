@@ -1592,5 +1592,114 @@ class AccountingMigration(unittest.TestCase):
         self.assertTrue(any("Accounting corrected" in x["msg"] for x in s.events(5)))
 
 
+class Efficiency(unittest.TestCase):
+    def test_gzip_only_when_asked_and_big(self):
+        import http.client, gzip as gz
+        ensure_server()
+
+        def get(path, enc):
+            c = http.client.HTTPConnection("127.0.0.1", 18765, timeout=20)
+            c.request("GET", path, headers={"Accept-Encoding": enc} if enc else {})
+            r = c.getresponse()
+            body = r.read()
+            h = {k.lower(): v for k, v in r.getheaders()}
+            c.close()
+            return r.status, h, body
+        st, h, body = get("/api/state", "gzip")
+        self.assertEqual(h.get("content-encoding"), "gzip")
+        plain = gz.decompress(body)
+        self.assertLess(len(body), len(plain) / 3)                                             # state JSON shrinks to under a third
+        self.assertIn("engine", json.loads(plain))
+        st, h, body = get("/api/state", "")
+        self.assertNotIn("content-encoding", h)                                                 # clients that do not ask get plain bytes
+        self.assertIn("engine", json.loads(body))
+        st, h, body = get("/healthz", "gzip")
+        self.assertNotIn("content-encoding", h)                                                 # tiny responses are not worth compressing
+        st, h, _ = get("/vendor/fonts/inter.woff2", "gzip")
+        self.assertNotIn("content-encoding", h)                                                 # already-compressed fonts are left alone
+
+    def test_versioned_assets_are_cached_for_a_year(self):
+        import urllib.request as ur
+        ensure_server()
+        self.assertIn("immutable", ur.urlopen("http://127.0.0.1:18765/app.js?v=123").headers["Cache-Control"])
+        self.assertEqual(ur.urlopen("http://127.0.0.1:18765/app.js").headers["Cache-Control"], "no-store")        # unversioned stays fresh
+        self.assertEqual(ur.urlopen("http://127.0.0.1:18765/").headers["Cache-Control"], "no-store")             # the page that names the versions is never cached
+
+    def test_indexes_and_equity_pruning(self):
+        s = mk_store()
+        names = {r[1] for r in s.db.execute("SELECT * FROM sqlite_master WHERE type='index'")}
+        self.assertIn("ix_trades_close", names)
+        old = int(time.time() * 1000) - 30 * 86400000
+        old -= old % 900000
+        for k in range(60):
+            s.add_equity(old + k * 60000, 100.0 + k, 100.0)
+        s.add_equity(int(time.time() * 1000), 123.0, 100.0)
+        s.prune()
+        left = s.db.execute("SELECT COUNT(*) FROM equity").fetchone()[0]
+        self.assertLess(left, 10)                                                               # month-old minute data thinned to 15-minute points
+        self.assertGreaterEqual(left, 4)
+        self.assertEqual(s.equity_curve()[-1][1], 123.0)                                        # recent history untouched
+
+    def test_one_bulk_request_prices_every_coin(self):
+        real = data._get
+        calls = []
+
+        def fake(url, timeout=15):
+            calls.append(url)
+            return [{"symbol": "BTCUSDT", "price": "80000.5"}, {"symbol": "ETHUSDT", "price": "2500.25"}]
+        data._get = fake
+        data._px.update(t=0.0, d={})
+        try:
+            self.assertEqual(data.last_price("futures", "BTCUSDT"), 80000.5)
+            self.assertEqual(data.last_price("futures", "ETHUSDT"), 2500.25)
+            self.assertEqual(len(calls), 1)                                                     # the second coin was served from the same request
+        finally:
+            data._get = real
+            data._px.update(t=0.0, d={})
+
+    def test_request_counter(self):
+        before = data.calls_last_minute()
+        data.CALLS.append(time.time()); data.CALLS.append(time.time() - 300)
+        self.assertEqual(data.calls_last_minute() - before, 1)                                  # only the last 60 seconds count
+
+
+class Affordability(unittest.TestCase):
+    def test_small_account_is_told_which_coins_it_cannot_trade(self):
+        from tradebot import catalog
+        insts = [catalog.make_instrument(catalog.lookup("futures", sy) or dict(market="futures", symbol=sy, name=sy, cat="crypto"), "4h", True) for sy in ("BTCUSDT", "SOLUSDT", "DOGEUSDT")]
+        s = mk_store(instruments=insts, start_equity=500.0)
+        s.put("cash", 500.0)
+        e = Engine(s, pricer=lambda m, sym: 100.0)
+        lots = {"BTCUSDT": (0.001, 0.001), "SOLUSDT": (0.1, 0.1), "DOGEUSDT": (1.0, 1.0)}
+        e._lot = lambda inst: lots[inst["symbol"]]
+        for i, px in zip(insts, (83000.0, 110.0, 0.086)):
+            e.status[i["id"]] = {"price": px}
+        a = e.affordability()
+        self.assertEqual(a["ok"], ["SOLUSDT", "DOGEUSDT"])
+        self.assertEqual([b[0] for b in a["blocked"]], ["BTCUSDT"])
+        self.assertGreater(a["blocked"][0][1], 2000)                                            # BTC needs a couple of thousand dollars at 0.3% risk
+        s.put("cash", 50000.0)
+        e._afford = None
+        self.assertEqual(e.affordability()["blocked"], [])
+
+
+class SettingsGuard(unittest.TestCase):
+    def test_health_warns_about_settings_that_run_against_the_research(self):
+        from tradebot import health, catalog
+        insts = [dict(catalog.make_instrument(catalog.lookup("futures", "BTCUSDT"), "4h", True))]
+        s = mk_store(instruments=insts)
+        e = Engine(s, pricer=lambda m, sym: 100.0)
+        titles = lambda: [i["title"] for i in health.checks(s, e)]
+        self.assertFalse(any("candles" in t or "Risk per trade" in t for t in titles()))            # the recommended setup raises nothing
+        for i in s.cfg["instruments"]:
+            i["tf"] = "5m"
+        s.save_cfg({"risk": {"per_trade_pct": 2.0}})
+        t = titles()
+        self.assertTrue(any("5m candles" in x for x in t))
+        self.assertTrue(any("Risk per trade is 2.0%" in x for x in t))
+        fix = [i["fix"] for i in health.checks(s, e) if "5m" in i["title"]][0]
+        self.assertIn("Trend mix", fix)                                                               # and it says exactly how to get back
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

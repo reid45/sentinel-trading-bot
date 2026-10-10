@@ -1,7 +1,7 @@
 """Dashboard + API server (standard library only). Run: py server.py   ->  http://localhost:8765
 Everything except POST /hook is restricted to local requests, so exposing the port through a tunnel for TradingView
 webhooks does not expose the dashboard."""
-import json, mimetypes, os, sys, threading, time, traceback, urllib.parse
+import gzip, json, mimetypes, os, sys, threading, time, traceback, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from tradebot import data, backtest as B, ai, analyst, llm, catalog, chat, indicators as I
@@ -374,10 +374,18 @@ class H(BaseHTTPRequestHandler):
                 return v
         return ""
 
+    ZIPPABLE = ("application/json", "text/javascript", "text/css", "text/html", "text/csv", "image/svg+xml")
+
     def _send(self, code, obj, ctype="application/json", cookie=None, location=None):
         b = obj if isinstance(obj, bytes) else json.dumps(obj).encode()
+        gz = len(b) > 1200 and ctype.split(";")[0] in self.ZIPPABLE and "gzip" in (self.headers.get("Accept-Encoding") or "")
+        if gz:                                                      # the dashboard state is polled every few seconds: 58 KB becomes about 8 KB
+            b = gzip.compress(b, 5)
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        if gz:
+            self.send_header("Content-Encoding", "gzip")
+        self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(b)))
         self.send_header("Cache-Control", self.__dict__.pop("_cc", "no-store"))   # per-request: HTTP/1.1 keep-alive reuses this handler
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -432,9 +440,12 @@ class H(BaseHTTPRequestHandler):
         ident = self._guard("GET", u.path)
         if ident is None:
             return
+        self._versioned = "v" in q
         try:
             if u.path == "/healthz":
                 return self._send(200, {"ok": True})
+            if u.path == "/api/affordability":
+                return self._send(200, engine.affordability())
             if u.path == "/api/styles":
                 from tradebot import styles
                 return self._send(200, styles.overview(store, engine))
@@ -498,6 +509,8 @@ class H(BaseHTTPRequestHandler):
             return self._send(404, {"error": "not found"})
         if "/vendor/" in path:
             self._cc = "public, max-age=604800, immutable"        # pinned third-party files never change: browser caches them
+        elif getattr(self, "_versioned", False) and path.endswith((".js", ".css")):
+            self._cc = "private, max-age=31536000, immutable"     # app files requested as name?v=<mtime>: the URL changes whenever the file does
         with open(full, "rb") as f:
             body = f.read()
         if full.endswith("index.html"):                              # stamp local assets with their mtime so an update can never serve stale JS/CSS

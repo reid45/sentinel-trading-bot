@@ -23,10 +23,10 @@ const STRAT = (() => {
     const c = S.cfg, sm_ = c.smart, sc = c.scalp, fs = owner() ? "" : " disabled";
     const t = D.trend, m = D.smart, a = D.scalp;
     $("#p-strategies").innerHTML = `<div class="rise"><div class="card" style="--i:0;margin-bottom:14px"><h3>Choose how the bot trades</h3>
-      <p class="note" style="margin:0">Three styles, each with its own switch, settings and scorecard. The <b>Trend following</b> style is the one that held up in testing. The other two are here to try on practice money: they show their own results so you can judge them. You can run several at once; they share one account but never share a trade.</p></div>
+      <p class="note" style="margin:0">Three styles, each with its own switch, settings and scorecard (the AI day trader and the chat live on the <b>Trader</b> page). The <b>Trend following</b> style is the one that held up in testing. The other two are here to try on practice money: they show their own results so you can judge them. You can run several at once; they share one account but never share a trade.</p></div>
       <fieldset${fs} style="border:0;padding:0;margin:0"><div class="sgrid">
       <div class="card" style="--i:1" id="stc_trend">${head(t)}${how(t)}<div id="stPerf_trend">${perfKpis(t)}</div>
-        <div class="row" style="gap:8px;flex-wrap:wrap"><span class="sub">Presets:</span><button class="btn sm" data-preset="cautious">Cautious (0.15%)</button><button class="btn sm pri" data-preset="trendmix">Trend mix (0.3%)</button><button class="btn sm" data-preset="bold">Bold (0.5%)</button><button class="btn sm" id="stScan">Open the trend scanner</button></div></div>
+        <div class="callout warn" id="stOffPlan" style="margin:0 0 10px;display:none"></div><div class="callout" id="stAfford" style="margin:0 0 10px;display:none"></div><div class="row" style="gap:8px;flex-wrap:wrap"><span class="sub">Presets:</span><button class="btn sm" data-preset="cautious">Cautious (0.15%)</button><button class="btn sm pri" data-preset="trendmix">Trend mix (0.3%)</button><button class="btn sm" data-preset="bold">Bold (0.5%)</button><button class="btn sm" id="stScan">Open the trend scanner</button></div></div>
 
       <div class="card" style="--i:2" id="stc_smart">${head(m)}${how(m)}<div id="stPerf_smart">${perfKpis(m)}</div>
         <div class="form">${fld("Crypto", sw("smCrypto", sm_.crypto))}${fld("US stocks", sw("smStocks", sm_.stocks), "Opening-range version, during US market hours, long only")}
@@ -80,15 +80,26 @@ const STRAT = (() => {
       $("#stOn_" + id).textContent = on ? "On" : "Off"; $("#stOn_" + id).className = "sub " + (on ? "up" : "");
       setHTML($("#stPerf_" + id), perfKpis(d));
     });
+    const op = $("#stOffPlan"), ts = D.trend.settings;
+    if (op) { op.style.display = ts && ts.off_plan ? "" : "none"; if (ts) op.innerHTML = `<b>Heads up.</b> The swing bot is on <b>${esc(ts.tf)}</b> candles at <b>${ts.risk}%</b> risk per trade. The tested setup is <b>4h</b> at <b>0.3%</b>: faster candles lost money after fees in every test, and bigger risk makes a bad week hurt more. Press <b>Trend mix</b> below to restore it.`; }
     const st = D.smart.status || {}, rows = Object.entries(st).sort((a, b) => b[1].t - a[1].t);
     setHTML($("#stWait"), !D.smart.enabled ? '<div class="empty">Switch the style on to see what it is waiting for.</div>' : rows.length ? `<table><tr><th>Market</th><th>Status</th><th>When</th></tr>${rows.map(([k, v]) => `<tr><td class="t"><b>${esc(k.replace("USDT", ""))}</b></td><td style="white-space:normal">${esc(v.text)}</td><td class="sub">${age(v.t)}</td></tr>`).join("")}</table>` : '<div class="empty">Scanning on the next closed candle...</div>');
     const a = D.scalp.scalp, be = a.breakeven;
     setHTML($("#stBE"), a.n ? `<div class="callout ${a.net_bps >= 0 ? "" : "warn"}" style="margin:0 0 10px"><b>Fee check.</b> ${esc(be ? be.msg : "Collecting trades: " + a.n + " so far (needs 20 for a verdict).")} <span class="sub">${a.per_day.toFixed(0)} trades a day, ${a.today} today, ${D.scalp.pending} order(s) resting.</span></div>` : '<div class="sub" style="margin-bottom:10px">No scalps yet. They appear when price stretches away from its average on a 1-minute candle.</div>');
   }
 
+  async function afford() {
+    try {
+      const a = await api("/api/affordability", undefined, true), el = $("#stAfford"); if (!el) return;
+      const n = a.ok.length + a.blocked.length;
+      el.style.display = n ? "" : "none";
+      el.innerHTML = a.blocked.length ? `<b>Your balance.</b> At ${money(a.equity, 0)} and ${a.risk_pct}% risk per trade the bot can trade <b>${a.ok.length} of ${n}</b> coins. The rest need a larger account because exchanges set a minimum order size: ${a.blocked.slice(0, 6).map(b => `<b>${esc(b[0].replace("USDT", ""))}</b> (about ${money(b[1], 0)})`).join(", ")}${a.blocked.length > 6 ? ` and ${a.blocked.length - 6} more` : ""}. You can raise your practice balance any time from the account chip at the top.` : `<b>Your balance.</b> ${money(a.equity, 0)} is enough to trade all ${n} coins at ${a.risk_pct}% risk per trade.`;
+    } catch (e) { }
+  }
+  let affT = 0;
   async function poll(force) {
     if (busy || !S) return; if (!force && Date.now() - lastT < 4000) return; busy = true; lastT = Date.now();
-    try { D = await api("/api/styles", undefined, true); if (!built) build(); paint(); } catch (e) { } finally { busy = false; }
+    try { D = await api("/api/styles", undefined, true); if (!built) build(); paint(); if (Date.now() - affT > 60000) { affT = Date.now(); afford(); } } catch (e) { } finally { busy = false; }
   }
   return { poll, render() { built = false; D = null; poll(true); } };
 })();

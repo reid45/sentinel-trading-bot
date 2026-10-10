@@ -75,6 +75,11 @@ class Store:
         CREATE TABLE IF NOT EXISTS ai_log(id INTEGER PRIMARY KEY AUTOINCREMENT, t INTEGER, inst TEXT, prompt TEXT, reply TEXT,
             take INTEGER, tokens_in INTEGER, tokens_out INTEGER, ms INTEGER);
         """)
+        self.db.executescript("""
+        CREATE INDEX IF NOT EXISTS ix_trades_close ON trades(t_close);
+        CREATE INDEX IF NOT EXISTS ix_trades_src ON trades(source, t_close);
+        """)
+        self.prune()
         try:
             self.db.execute("ALTER TABLE trades ADD COLUMN ai_p REAL")
         except sqlite3.OperationalError:
@@ -161,6 +166,14 @@ class Store:
     def trades(self, limit=500):
         with self.lock:
             return [dict(r) for r in self.db.execute("SELECT * FROM trades ORDER BY t_close DESC LIMIT ?", (limit,))]
+
+    def prune(self):
+        """Keep the equity history light: full one-minute detail for 14 days, 15-minute detail after that (a year stays under 40k rows, not 500k)."""
+        with self.lock:
+            cut = int(time.time() * 1000) - 14 * 86400000
+            self.db.execute("DELETE FROM equity WHERE t < ? AND (t / 60000) % 15 <> 0", (cut,))
+            self.db.execute("DELETE FROM thoughts WHERE id < (SELECT COALESCE(MAX(id), 0) FROM thoughts) - 800")
+            self.db.commit()
 
     def add_equity(self, t, eq, cash):
         with self.lock:

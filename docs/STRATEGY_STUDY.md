@@ -75,6 +75,21 @@ We also tested cutting position size while the account is in drawdown (`research
 Brakes trim drawdowns by 3-5 points but give up most of the profit, because trend-following earns its money in the recoveries after the dips. Not enabled.
 The protections that *are* on (daily-loss stop, drawdown halt at 20%, per-trade risk of 0.3%, max 15 open trades) exist to survive, not to boost returns.
 
+### Portfolio risk rules we tested and did not adopt
+
+Same four windows, same 38 coins (`research/risk_study.py`). A rule is only worth shipping if it helps in most windows:
+
+| Rule | 0-30% | 30-60% | Out-of-sample 60-100% | Last 50 days |
+|------|-------|--------|-----------------------|--------------|
+| **Current default (no extra rule)** | +8.5% | +6.3% | +13.8% | -12.6% |
+| Max 2 trades per coin | +12.9% | +6.1% | +9.4% | -11.0% |
+| Max 1 trade per coin | +12.5% | +0.3% | +7.9% | -9.7% |
+| Max 9 trades in the same direction | +0.6% | +1.9% | +9.4% | -4.4% |
+| Max 7 trades in the same direction | +1.4% | -0.8% | +10.7% | -5.8% |
+| Altcoin longs only while BTC is above its 4h EMA50 / EMA100 / EMA200 | +7.9% / -14.6% / -7.4% | -2.4% / -7.7% / -9.7% | +9.8% / +7.7% / +14.8% | -11.4% / -12.0% / -9.5% |
+
+Caps trade profit for protection only in the bad window; the Bitcoin-regime filter is clearly harmful (it blocks the early moves trend-following lives on). The default stays.
+
 ## Result 4: the two "fast" and "patient" styles, tested honestly
 
 You asked for a high-frequency scalper and a patient day trader that follows the big players. Both were built, and both were tested first:
@@ -123,5 +138,6 @@ python research/orb5_study.py               # stocks: 5-minute opening range (60
 python research/footprint_study.py          # big-player positioning vs next-hour returns
 python research/playbook_study.py           # the smart-money confirmation sequence on crypto
 python research/brake_study.py              # drawdown brake variants (rejected)
+python research/risk_study.py               # per-coin / same-direction caps and a BTC regime filter (rejected)
 python research/engine_replay.py 300        # the live engine vs the backtester on the last 300 bars
 ```
