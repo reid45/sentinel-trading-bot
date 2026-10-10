@@ -224,7 +224,7 @@ class Engine:
             d = abs(px - stop)
         if d <= 0:
             return False, "bad stop distance"
-        qty = min(eq * r["per_trade_pct"] / 100 / d, eq * min(r["max_leverage_per_pos"], mc["max_lev"]) / px)
+        qty = min(eq * r["per_trade_pct"] / 100 / (d + 2 * fee * px), eq * min(r["max_leverage_per_pos"], mc["max_lev"]) / px)      # risk budget covers fees + slippage both ways, so a stop-out costs what you set
         gross = sum(p["qty"] * p.get("mark", p["entry"]) for p in poss.values())
         room = eq * r["max_total_leverage"] - gross
         qty = min(qty, room / px)

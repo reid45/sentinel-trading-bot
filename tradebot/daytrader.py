@@ -104,13 +104,13 @@ def decide(store, inst, hist, btc, poss, equity, fetch, reasons, tf):
         msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": doss}]
         body = llm.build_body(cfg, msgs, tools=analyst.TOOLS, max_tokens=160)
         rounds = int(cfg.get("max_tool_rounds", 2))
-        tin = 0
+        tin = tout = 0
         for rnd in range(rounds + 1):
             if rnd == rounds:
                 body.pop("tools", None)
             r = analyst._post(cfg, body, cfg.get("timeout", 12))
             hit, miss, o, usd = analyst.record(store, r.get("usage", {}), cfg["model"])
-            tin, out["usd"] = tin + hit + miss + o, out["usd"] + usd
+            tin, tout, out["usd"] = tin + hit + miss, tout + o, out["usd"] + usd
             msg = r["choices"][0]["message"]
             if msg.get("tool_calls"):
                 msgs.append({k: msg[k] for k in ("role", "content", "tool_calls") if k in msg})
@@ -126,8 +126,8 @@ def decide(store, inst, hist, btc, poss, equity, fetch, reasons, tf):
                 raise RuntimeError("unreadable reply")
             if d["action"] != "flat" and d["target_atr"] < 1.2 * d["stop_atr"]:
                 d.update(action="flat", why="reward/risk too low: " + d["why"])
-            out.update(d, tokens=tin, ms=int((time.time() - t0) * 1000), source="api")
-            store.ai_log_add(inst="day:" + inst["id"], prompt=doss, reply="%s %d%% %s" % (d["action"], d["conf"], d["why"]), take=int(d["action"] != "flat"), tokens_in=tin, tokens_out=0, ms=out["ms"])
+            out.update(d, tokens=tin + tout, ms=int((time.time() - t0) * 1000), source="api")
+            store.ai_log_add(inst=inst["id"] if inst["id"].startswith("day:") else "day:" + inst["id"], prompt=doss, reply="%s %d%% %s" % (d["action"], d["conf"], d["why"]), take=int(d["action"] != "flat"), tokens_in=tin, tokens_out=tout, ms=out["ms"])
             analyst._breaker["fails"] = 0
             _memo[key] = out
             return out
