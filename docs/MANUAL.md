@@ -2,7 +2,7 @@
 
 *A plain-English guide for people who have never run a trading bot.*
 
-Sentinel watches 13 crypto and currency markets around the clock and buys or sells for you using one simple idea: **follow strong trends and cut losses fast.** It starts in **practice mode**: real market prices, fake money. Nothing in practice mode can lose real money.
+Sentinel watches dozens of crypto and currency markets around the clock and buys or sells for you using one simple idea: **follow strong trends and cut losses fast.** It starts in **practice mode**: real market prices, fake money. Nothing in practice mode can lose real money.
 
 > **Not financial advice.** Past results do not predict the future. Even in the best backtest this bot earns a modest return with real losing streaks. Only ever risk money you can afford to lose.
 
@@ -43,7 +43,7 @@ You can re-run the wizard any time from **Help → Re-run setup**, and replay th
 The left rail switches pages. Press `Ctrl+K` (or `Cmd+K`) for a quick search to jump anywhere, and the number keys **1–5** also switch pages.
 
 **Top bar**
-- **Live · 13 markets / Paused / Halted**: the bot's status.
+- **Live · N markets / Paused / Halted**: the bot's status.
 - **Practice mode**: reminder that no real money is involved.
 - **Account chip** (wallet icon + amount): your account value. Click it to change your starting balance and how bold each trade is.
 - **Run / Pause**: the on/off switch. *Run*: the bot checks every market and trades by itself. *Pause*: no new trades (open trades keep their safety stops).
@@ -69,7 +69,7 @@ Stocks are long-only (no shorting) and only move during market hours. Big US com
 - The thin **blue lines** are the recent high and low the bot watches. When price breaks through one, the bot trades.
 - **Arrows** mark the bot's buys and sells; circles mark exits with the result; a **dashed red line** is the safety stop of an open trade.
 - A sentence above the chart says what the bot is doing on that market and when the next candle closes.
-- The **market list** on the right shows all 13 markets with a mini price chart. A glowing dot means the bot holds a trade there. Click any market to switch.
+- The **market list** on the right shows your markets with a mini price chart. A glowing dot means the bot holds a trade there. Click any market to switch.
 - The bottom panel has **Open trades**, **Activity** (a log of everything the bot did and why) and **History** (finished trades).
 
 ### Trader (day trading and chat)
@@ -90,14 +90,16 @@ Sentinel starts in **Simple mode**, which shows only what a beginner needs. Swit
 
 ## 4. What the bot actually does
 
-1. Every **4 hours**, when a new candle closes, the bot checks each market.
-2. **Entry.** For crypto, if the price closes above its 40-candle high (or below its 40-candle low) that is a *breakout*, often the start of a trend, so it enters in that direction. For the three currency pairs it uses a different trend signal (fast and slow moving averages crossing, confirmed by a trend-strength filter).
-3. **Size.** It sizes the trade so that if the safety stop is hit you lose only your chosen risk (0.5% of the account by default, so about $5 on $1,000). Leverage is capped.
-4. **Safety stop.** Every trade gets an automatic stop-loss placed at 4× the market's normal 4-hour movement (3× for currencies). As the trade moves in your favor the stop follows it (a *trailing stop*) and never moves back.
+1. Every **4 hours**, when a new candle closes, the bot checks every market (38 crypto coins by default).
+2. **Entry: the trend mix.** Each coin is watched by **four independent trend systems**: three breakout systems (price closes above its recent high or below its recent low, one of them only when the daily trend agrees) and one moving-average cross. Each system opens its **own** trade with its **own** stop. The currency pairs use the moving-average cross.
+3. **Size.** It sizes every trade so that if the safety stop is hit you lose only your chosen risk, **fees included** (0.3% of the account by default, so about $3 on $1,000). Leverage is capped.
+4. **Safety stop.** Every trade gets an automatic stop-loss 3 to 5 times the market's normal 4-hour movement. As the trade moves in your favour the stop follows it (a *trailing stop*) and never moves back.
 5. **Exit.** The trade closes when the stop is hit, or when the trend flips the other way.
-6. **Rules that cannot be broken.** At most 6 trades at once, never more than 3× leverage, a daily-loss limit, and an emergency drawdown brake (section 8).
+6. **Rules that cannot be broken.** At most 15 trades at once, never more than 3x leverage, a daily-loss limit, an emergency drawdown brake (section 8), and your own **Trading rules** (hours, direction, daily limit, cool-down, stop-out pause: Settings).
 
-Most trades lose a little and a few win big. A win rate of 35–45% is normal for this style, so a quiet or losing week is not a sign something is broken.
+Most trades lose a little and a few win big. A win rate of 35-45% is normal for this style, so a quiet or losing week is not a sign something is broken. **Why it can look quiet:** a breakout is a *rare event* on a 4-hour candle. Across 38 coins expect roughly 10 to 15 trades a week, not several an hour. The **Trader** page shows a live **Trend scanner**: how far each coin is from its next trigger.
+
+The **chart** has a timeframe switcher (1m, 5m, 15m, 1h, 4h, 1d). The **swing bot** trades on one timeframe, set in Settings (Pro mode). Faster is **not** better: with real trading fees, our tests found only the **4-hour** setting profitable; 15-minute and 1-hour versions of every strategy lost money, including the popular Smart-Money / ICT patterns (details: [STRATEGY_STUDY.md](STRATEGY_STUDY.md)).
 
 ## 5. Practice account
 
@@ -192,4 +194,22 @@ The **chart** has a timeframe switcher (1m, 5m, 15m, 1h, 4h, 1d). The **swing bo
 
 ## 13. Honest expectations
 
-Over 5 years of real past data, the default setup (13 markets, 0.5% risk per trade, after fees, slippage and funding) returned about **+55% total (≈7.6% a year) with a worst dip of ≈20%**; at 1% risk about +109% with a ≈29% dip. That is a modest, real edge, not a get-rich-quick machine. The settings were chosen after seeing that data, so live results will probably be worse, and individual markets often show no edge on their own. Expect losing streaks. Run in practice mode for weeks before you consider anything else.
+Our research (real candles, after fees, slippage and funding, judged on unseen data) found that the default trend mix earned about **+13% and +19% in two separate year-long windows with a worst dip of 8-15%**, from about 12-14 trades a week. That is a modest, real edge, not a get-rich-quick machine, and it comes from a market regime that may not repeat. Expect losing months and drawdowns of 10-20%. Faster trading did not work in any test. Read [STRATEGY_STUDY.md](STRATEGY_STUDY.md) for every number and how to reproduce it.
+
+## 14. Make it yours (Settings)
+
+Open **Settings** and scroll to the cards below. Changes apply immediately.
+
+- **Appearance**: Dark, Light or Auto theme; accent colour; price colours (including a colour-blind-safe pair); compact layout; text size; corner roundness; animations on/off; currency symbol; 12/24-hour clock; which page opens first; the **app name** shown in the tab and on the sign-in page; and which Home sections are visible.
+- **Trading rules**: only trade at certain UTC hours and weekdays; long-only or short-only; a daily trade limit; a cool-down after closing a coin; a pause after a run of stop-outs; a cap on total day-trade risk. When a rule blocks a trade the Trader page says exactly why.
+- **Alerts**: paste a Discord, Slack or generic webhook URL (or a Telegram bot token and chat id) and press *Send a test*. You get a message when trades open or close or something needs attention.
+
+## 15. Sign-in and putting it on a website
+
+- On your own computer sign-in is **optional**. Turn it on in Settings, *Sign-in and accounts* (choose a username and a password of 10+ characters). The first account is the **Owner**. Owners can add **View-only** people who can watch but not trade, change settings or see keys.
+- To host it on a website with its own address (for example a subdomain), follow [DEPLOY.md](DEPLOY.md). Sign-in is then always on, and creating the first owner needs a one-time setup code from the server.
+- Forgot your password? On the computer running Sentinel: `python sentinel.py passwd <username>`.
+
+## 16. The Health chip
+
+The chip next to the status at the top turns amber or red when something needs attention and lists, in plain English, what is wrong and what to do (price feed down, AI not connected, trading halted, no login on a public address, and more). `python sentinel.py doctor` tests every price feed from the machine it runs on.

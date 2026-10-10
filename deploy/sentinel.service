@@ -1,0 +1,30 @@
+# /etc/systemd/system/sentinel.service      then:  sudo systemctl daemon-reload && sudo systemctl enable --now sentinel
+[Unit]
+Description=Sentinel trading bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=sentinel
+Group=sentinel
+WorkingDirectory=/opt/sentinel
+ExecStart=/usr/bin/python3 /opt/sentinel/server.py
+Environment=HOST=127.0.0.1
+Environment=PORT=8765
+Environment=TRADEBOT_DATA=/var/lib/sentinel
+Environment=SENTINEL_HOSTS=sentineltrade.axiominternational.ca
+Environment=SENTINEL_TRUST_PROXY=1
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=5
+
+# hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/sentinel
+StateDirectory=sentinel
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+# Caddy gets and renews the https certificate by itself. Replace the site name if you use another one.
+sentineltrade.axiominternational.ca {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	# Sentinel adds its own security headers; Caddy forwards the visitor's address and https flag automatically.
+	reverse_proxy 127.0.0.1:8765
+}

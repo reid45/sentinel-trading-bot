@@ -1,6 +1,6 @@
 """Market catalog: a big curated list (crypto perps, stocks, ETFs, indices, commodities, forex), every live Binance USDT perpetual,
 and Yahoo Finance symbol search for anything else. Also builds instrument configs with sensible per-market defaults."""
-import json, os, time, urllib.parse
+import copy, json, os, time, urllib.parse
 from . import data
 
 CATS = [("crypto", "Crypto"), ("stock", "Stocks"), ("etf", "ETFs"), ("forex", "Forex"), ("commodity", "Commodities"), ("index", "Indices")]
@@ -291,6 +291,16 @@ def search(q="", cat="all", limit=60, online=True):
 
 # ---------------------------------------------------------------- instrument defaults
 PERP = dict(n=40, trend=0, stop=4.0, trail=1, tp=0, reverse=1)
+# Four independent 4h trend systems per coin, picked from the walk-forward studies in research/ (see docs/STRATEGY_STUDY.md).
+TRENDMIX = dict(members=[
+    dict(name="donch20", strat="donchian", p=dict(n=20, trend=200, stop=5.0, trail=1, tp=0, reverse=1)),
+    dict(name="donch40", strat="donchian", p=dict(n=40, trend=0, stop=4.0, trail=1, tp=0, reverse=1)),
+    dict(name="mtf1d", strat="mtf_break", p=dict(n=20, htf="1d", fast=20, slow=50, adx=18, stop=3.0, trail=1, tp=0, reverse=0)),
+    dict(name="ema20_150", strat="emacross", p=dict(fast=20, slow=150, adx=15, stop=4.5, trail=1, tp=0, reverse=1))], trail=1)
+# 38 liquid USDT perpetuals from the study (priority order when position slots are scarce). TON and MKR were dropped: Binance serves frozen zero-volume candles for them.
+UNIVERSE = ("BTCUSDT ETHUSDT SOLUSDT BNBUSDT XRPUSDT DOGEUSDT ADAUSDT AVAXUSDT LINKUSDT LTCUSDT NEARUSDT SUIUSDT TRXUSDT DOTUSDT ATOMUSDT UNIUSDT ETCUSDT FILUSDT "
+            "APTUSDT ARBUSDT OPUSDT INJUSDT AAVEUSDT RUNEUSDT ALGOUSDT HBARUSDT ICPUSDT STXUSDT FETUSDT TIAUSDT SEIUSDT BCHUSDT XLMUSDT LDOUSDT GRTUSDT IMXUSDT "
+            "1000PEPEUSDT 1000SHIBUSDT").split()
 FX = dict(fast=10, slow=100, adx=15, stop=3.0, trail=1, tp=0, reverse=1)
 STOCK = dict(n=55, trend=200, stop=3.0, trail=1, tp=0, reverse=0)
 
@@ -301,7 +311,7 @@ def defaults_for(market):
         return "emacross", dict(FX)
     if market == "stock":
         return "donchian", dict(STOCK)
-    return "donchian", dict(PERP)
+    return "trendmix", copy.deepcopy(TRENDMIX)
 
 
 def make_instrument(row, tf="4h", enabled=True, fav=False):

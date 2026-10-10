@@ -26,7 +26,7 @@ async function removeMarket(id, trigger) {
 function renderHomeMarkets() {
   const el = $("#hMarkets"); if (!el) return; const e = S.engine;
   const h = sortedInsts().map(i => {
-    const t = e.status[i.id] || {}, sp = sparks[i.id] || {}, up = (sp.c || 0) >= 0, hold = e.positions.find(p => p.id === i.id || p.id === "day:" + i.id);
+    const t = e.status[i.id] || {}, sp = sparks[i.id] || {}, up = (sp.c || 0) >= 0, hold = e.positions.find(p => p.id === i.id || p.id === "day:" + i.id || String(p.id).startsWith(i.id + "#"));
     return `<div class="mcard ${hold ? "holding" : ""}" data-id="${esc(i.id)}"><button class="star ${i.fav ? "on" : ""}" data-fav="${esc(i.id)}" data-tip="${i.fav ? "Remove from favorites" : "Favorite: pins to the top"}">&#9733;</button>
      <div class="mtop">${coinFor(i)}<div><div class="t1">${esc(short(i))}</div><div class="t2">${esc(nameOf(i))}</div></div></div>
      <div class="mpx"><b class="num">${px(t.price)}</b><span class="${up ? "up" : "down"}">${pct(sp.c || 0, 1)}</span></div><div class="mspark">${spark(sp.s, up)}</div>
@@ -159,11 +159,14 @@ const TH = { rows: [], last: 0, timer: 0 }, CH = { msgs: [], busy: false };
 const KINDS = { candidate: ["activity", "Spotted", "acc"], decision: ["sparkles", "Decided", "acc"], open: ["trending-up", "Opened", "up"], close: ["x", "Closed", ""], skip: ["pause", "Passed", ""], manage: ["refresh-cw", "Managing", ""] };
 function buildTrader() {
   $("#p-trader").innerHTML = `<div class="rise"><div class="trader">
-   <div class="tcol"><div class="card" style="--i:0"><h3>Day trading <span class="pill" id="dState"></span></h3>
+   <div class="tcol"><div class="card" style="--i:0"><h3>Trend scanner <span class="pill up" id="scState"></span></h3>
+     <p class="note" style="margin:0 0 10px">The trend mix watches every coin on 4-hour candles and enters when price breaks out. Closest to a trigger first. The next check is when the 4-hour candle closes.</p>
+     <div class="grid g5" id="scStats" style="grid-template-columns:repeat(auto-fit,minmax(110px,1fr));margin-bottom:12px"></div><div class="scroll" id="scList" style="max-height:300px"></div></div>
+    <div class="card" style="--i:0"><h3>Day trading <span class="pill" id="dState"></span> <span class="pill">experimental</span></h3>
      <p class="note" style="margin:0 0 14px">Quick trades on <b>15-minute</b> candles. A scanner finds setups, then the AI decides with full market data. Every step appears below.</p>
-     <div class="form"><div><label class="f">Markets to watch</label><select id="dMarkets"><option value="3">3 (favorites first)</option><option value="6">6</option><option value="10">10</option></select></div>
+     <div class="form"><div><label class="f">Markets to watch</label><select id="dMarkets"><option value="3">3 (favorites first)</option><option value="6">6</option><option value="10">10</option><option value="20">20</option></select></div>
       <div><label class="f">How picky is it?</label><select id="dPicky"><option value="50">Relaxed: more trades</option><option value="60">Balanced</option><option value="75">Strict: fewer, higher confidence</option></select></div>
-      <div><label class="f">Longest time in a trade</label><select id="dHold"><option value="2">30 minutes</option><option value="4">1 hour</option><option value="8">2 hours</option><option value="16">4 hours</option><option value="24">6 hours</option></select></div></div>
+      <div><label class="f">Longest time in a trade</label><select id="dHold"><option value="2">30 minutes</option><option value="4">1 hour</option><option value="8">2 hours</option><option value="12">3 hours</option><option value="16">4 hours</option><option value="24">6 hours</option></select></div></div>
      <div class="row" style="margin-top:16px"><button class="btn pri" id="dToggle" style="min-width:200px">Start day trading</button><span class="sub" id="dNote"></span></div>
      <div class="grid g5" id="dStats" style="margin-top:16px;grid-template-columns:repeat(auto-fit,minmax(110px,1fr))"></div>
      <div class="callout" style="margin-top:14px">Honest note: in our backtests every rule-based strategy lost money at this speed because trading fees add up. The AI day trader is <b>unproven</b>, so it runs on practice money and the scorecard will show whether it truly works. Start small.</div></div>
@@ -192,7 +195,15 @@ function renderTrader() {
   setHTML($("#dState"), d.enabled ? "ON" : "OFF"); $("#dState").className = "pill " + (d.enabled ? "up" : "");
   $("#dNote").textContent = !st.connected ? "Needs an AI connection first" : d.enabled ? "Scanning " + d.markets + " markets every 15 min" : "Practice money only";
   setHTML($("#dStats"), kpi("Scans", ds.scans || 0, "candles checked", "") + kpi("Setups", ds.candidates || 0, "sent to the AI", "") + kpi("Day trades", ds.trades || 0, "opened", "") + kpi("Open now", ps.length, ps.length ? sm(pnl) : "none", cls(pnl)));
-  thPoll(); chatDraw();
+  scanDraw(); thPoll(); chatDraw();
+}
+function scanDraw() {
+  const e = S.engine, tf = (S.cfg.instruments[0] || {}).tf || "4h", rows = S.cfg.instruments.filter(i => i.market === "futures").map(i => ({ i, st: e.status[i.id] || {} })).filter(r => r.st.price && r.st.to_up != null);
+  const open = e.positions.filter(p => !String(p.id).startsWith("day:")), nb = rows.map(r => r.st.next_bar).filter(Boolean), next = nb.length ? Math.min(...nb) - e.now : null;
+  $("#scState").textContent = S.cfg.instruments.some(i => i.strategy === "trendmix") ? "Trend mix on" : "Custom strategies";
+  setHTML($("#scStats"), kpi("Coins watched", rows.length, "futures markets", "") + kpi("In trades", open.length, "sleeves open", "") + kpi("Next candle", next == null ? "--" : dur(Math.max(0, next)), tf + " close", "") + kpi("Closest", rows.length ? (Math.min(...rows.map(r => Math.min(r.st.to_up, r.st.to_dn))).toFixed(1)) + "%" : "--", "to a trigger", ""));
+  const best = rows.sort((a, b) => Math.min(a.st.to_up, a.st.to_dn) - Math.min(b.st.to_up, b.st.to_dn)).slice(0, 12);
+  setHTML($("#scList"), best.length ? `<table><tr><th>Coin</th><th>Price</th><th>Trend</th><th>Up trigger</th><th>Down trigger</th><th>Trades</th></tr>${best.map(({ i, st }) => { const n = open.filter(p => String(p.id).startsWith(i.id + "#")).length; const t = st.trend; return `<tr><td class="t"><b>${esc(short(i))}</b></td><td>${px(st.price)}</td><td><span class="pill ${t > 0 ? "up" : t < 0 ? "down" : ""}">${t > 0 ? "Up" : t < 0 ? "Down" : "--"}</span></td><td class="${st.to_up < 1 ? "up" : ""}">${st.to_up >= 0 ? "+" : ""}${st.to_up.toFixed(1)}%</td><td class="${st.to_dn < 1 ? "down" : ""}">-${st.to_dn.toFixed(1)}%</td><td>${n ? n + " open" : "waiting"}</td></tr>`; }).join("")}</table>` : '<div class="empty">Waiting for prices.</div>');
 }
 async function thPoll() {
   if (Date.now() - TH.timer < 2500) return; TH.timer = Date.now();

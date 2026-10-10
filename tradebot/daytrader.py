@@ -3,14 +3,15 @@ decides long / short / flat with a stop and target, using a full dossier (price 
 crowding, your open book, its own recent results). Same token discipline as the analyst: static cache-friendly prefix,
 dossier last, 2 tool rounds max, hard budgets, circuit breaker, fail-safe (no AI -> no trade)."""
 import json, re, time
-from . import analyst, context, indicators as I, llm
+from . import analyst, context, indicators as I, llm, tools
 
 SYSTEM = (
     "You are the decision engine of an intraday trading bot working 15-minute candles. A rule-based scanner flagged this market as a candidate. "
     "Decide whether to open a trade NOW. Be selective: costs are about 0.16% per round trip, so only take setups where the expected move clearly exceeds costs; "
     "most candidates should be 'flat'. Prefer trading with momentum when ADX is rising and volume confirms; fade only extreme RSI with a clear reversal candle. "
     "Avoid chasing exhausted moves, crowded funding, trading against BTC's trend, and thin/choppy ranges. Always give a protective stop. "
-    "Use the dossier; call a tool only if a specific fact is missing (max 2 calls). "
+    "The dossier ends with a measured track record of this trigger on this coin (follow vs fade, net of fees): respect it, and say flat when both sides lose. "
+    "Call a tool only if a specific fact is missing (max 2 calls): levels = liquidity map, mtf = multi-timeframe trend, flow = order book + taker pressure, edge = trigger history. "
     'Reply with JSON only: {"action":"long|short|flat","conf":<0-100>,"stop_atr":<0.6-3>,"target_atr":<0.8-5>,"why":"<=16 words"}'
 )
 
@@ -29,6 +30,11 @@ def candidates(hist):
     rsi = I.rsi(c, 14)[-1]
     if rsi is not None and (rsi <= 25 or rsi >= 75):
         out.append("RSI %.0f is extreme" % rsi)
+    try:                                                      # smart-money patterns (liquidity sweep, fair value gap, order block) on the last closed bar
+        for name, sd, text in tools.smc_hits(hist):
+            out.append("%s (%s)" % (text, "long" if sd == 1 else "short"))
+    except Exception:
+        pass
     avg = sum(v[-21:-1]) / 20 if sum(v[-21:-1]) else 0
     if avg and v[-1] >= 2.2 * avg and atr and abs(c[-1] - hist[-1][1]) >= 0.8 * atr:
         out.append("volume %.1fx average on a strong candle" % (v[-1] / avg))
@@ -48,7 +54,7 @@ def stats(hist, per_hour=4):
                 vol=v[-1] / (sum(v[-21:-1]) / 20) if sum(v[-21:-1]) else 1.0, last12=last12, atr=atr)
 
 
-def dossier(store, inst, hist, btc, poss, equity, reasons, tf):
+def dossier(store, inst, hist, btc, poss, equity, reasons, tf, fetch=None):
     s = stats(hist)
     lines = ["%s %s | trigger: %s" % (inst["symbol"], tf, "; ".join(reasons)),
              "px %.6g ATR %.2f%% | ret 1h %+.2f%% 4h %+.2f%% 24h %+.2f%% | vs EMA50 %+.2f%% EMA200 %+.2f%% | RSI %.0f | ADX %.0f (was %.0f) | 24h range pos %.0f%% | vol %.1fx" % (
@@ -62,6 +68,12 @@ def dossier(store, inst, hist, btc, poss, equity, reasons, tf):
             lines.append(analyst.render_derivs(analyst.derivs(inst["symbol"])))
         except Exception:
             lines.append("derivs unavailable")
+    try:                                                      # what these triggers have actually paid on this coin lately (net of fees), so the model starts from evidence
+        kinds = [k for k, w in (("breakout", "20-bar"), ("rsi_extreme", "RSI"), ("volume_surge", "volume"), ("sweep", "swept liquidity"), ("fvg", "fair value gap"), ("ob", "order block")) if any(w in r for r in reasons)]
+        if kinds and fetch is not None:
+            lines.append(tools.edge_line(fetch, inst["market"], inst["symbol"], kinds[:2], tf))
+    except Exception:
+        pass
     risk = sum(abs(p.get("mark", p["entry"]) - p["stop"]) * p["qty"] for p in poss.values())
     lines.append("book: %d open, risk in play %.1f%% of equity | UTC hour %d" % (len(poss), risk / equity * 100 if equity else 0, time.gmtime().tm_hour))
     mine = [t for t in store.trades(80) if t.get("source") == "day"]
@@ -100,7 +112,7 @@ def decide(store, inst, hist, btc, poss, equity, fetch, reasons, tf):
         return dict(out, why=why, source="budget")
     t0 = time.time()
     try:
-        doss = dossier(store, inst, hist, btc, poss, equity, reasons, tf)
+        doss = dossier(store, inst, hist, btc, poss, equity, reasons, tf, fetch)
         msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": doss}]
         body = llm.build_body(cfg, msgs, tools=analyst.TOOLS, max_tokens=160)
         rounds = int(cfg.get("max_tool_rounds", 2))

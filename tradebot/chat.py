@@ -11,7 +11,7 @@ TOOLS = [
     {"type": "function", "function": {"name": "positions", "description": "Open positions with entry, price, stop, target and profit.", "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {"name": "thoughts", "description": "The trader's most recent reasoning and actions (newest first).", "parameters": {"type": "object", "properties": {"n": {"type": "integer"}}}}},
     {"type": "function", "function": {"name": "market", "description": "Current price, trend, volatility and status of one watched market.", "parameters": {"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]}}},
-] + [t for t in analyst.TOOLS if t["function"]["name"] in ("journal", "derivs", "candles")]
+] + [t for t in analyst.TOOLS if t["function"]["name"] in ("journal", "derivs", "candles", "levels", "mtf", "flow", "edge")]
 
 
 def _tool(name, args, store, engine):

@@ -1,0 +1,16 @@
+# docker compose up -d --build
+# Put Caddy or nginx in front of it for https (see docs/DEPLOY.md). The port is bound to localhost only on purpose.
+services:
+  sentinel:
+    build: .
+    container_name: sentinel
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      SENTINEL_HOSTS: "sentineltrade.axiominternational.ca"   # the site name(s) it will answer to; also turns sign-in on
+      SENTINEL_TRUST_PROXY: "1"
+    volumes:
+      - sentinel-data:/data                                    # database, config (with your keys) and downloaded candles
+volumes:
+  sentinel-data:

@@ -1,6 +1,6 @@
 """SQLite persistence + JSON config (secrets stay on this machine in data/config.json)."""
 import os, json, sqlite3, threading, time, copy
-from . import catalog
+from . import catalog, notify
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.environ.get("TRADEBOT_DATA") or os.path.join(ROOT, "data")
@@ -14,9 +14,9 @@ DEFAULTS = {
     "mode": "paper",                      # paper | live
     "start_equity": 10000.0,
     "poll_seconds": 20,
-    "risk": {"per_trade_pct": 0.5, "max_positions": 6, "max_leverage_per_pos": 3.0, "max_total_leverage": 3.0,
+    "risk": {"per_trade_pct": 0.3, "max_positions": 15, "max_leverage_per_pos": 3.0, "max_total_leverage": 3.0,
              "daily_loss_limit_pct": 3.0, "max_drawdown_halt_pct": 20.0},
-    "instruments": [_mk("futures", s) for s in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "LINKUSDT", "LTCUSDT", "AVAXUSDT")] +
+    "instruments": [_mk("futures", s) for s in catalog.UNIVERSE] +
                    [_mk("forex", s) for s in ("EURUSD=X", "GBPUSD=X", "USDJPY=X")] +
                    [_mk("stock", s, on=False) for s in catalog.FEATURED_STOCKS],        # big companies are listed watch-only; one tap lets the bot trade them
     "ai": {"mode": "advise", "provider": "deepseek", "base_url": "https://api.deepseek.com", "model": "deepseek-flash",
@@ -25,9 +25,23 @@ DEFAULTS = {
     "broker": {"exchange": "bybit", "bybit_env": "demo", "bybit_key": "", "bybit_secret": "",
                "binance_key": "", "binance_secret": "", "binance_testnet": True},
     "webhook_secret": "",
-    "ui": {"onboarded": False, "tour_done": False},
-    "day": {"enabled": False, "tf": "15m", "markets": 6, "min_conf": 60, "max_hold_bars": 24},
+    "ui": {"onboarded": False, "tour_done": False, "brand": "Sentinel", "theme": "dark", "accent": "#7c9cff", "density": "comfortable", "font": 100, "radius": 16,
+           "palette": "classic", "motion": True, "landing": "portfolio", "clock": "24", "currency": "USD",
+           "home": {"insight": True, "kpis": True, "safety": True, "open": True, "markets": True}},
+    "day": {"enabled": False, "tf": "15m", "markets": 8, "min_conf": 50, "max_hold_bars": 12},
+    "rules": {"hours": {"enabled": False, "start": 8, "end": 22, "days": [0, 1, 2, 3, 4, 5, 6]},      # UTC hours; trade only inside this window
+              "direction": "both",                                  # both | long | short
+              "max_trades_day": 0,                                  # 0 = no limit
+              "cooldown_min": 15,                                   # wait after closing a market before re-entering it
+              "pause_after_stops": 3, "pause_minutes": 60,          # freqtrade-style StoplossGuard: N stop-outs within an hour pause new entries
+              "max_open_risk_pct": 4.0,                             # total money-at-risk across open day trades, % of equity
+              "min_rr": 1.2},
+    "notify": {"kind": "discord", "url": "", "telegram_token": "", "telegram_chat": "", "on_open": True, "on_close": True, "on_alert": True},
 }
+
+
+SECRETS = (("ai", "api_key"), ("broker", "binance_key"), ("broker", "binance_secret"), ("broker", "bybit_key"), ("broker", "bybit_secret"),
+           ("notify", "url"), ("notify", "telegram_token"))
 
 
 def deep_merge(base, over):
@@ -103,7 +117,7 @@ class Store:
 
     def public_cfg(self):
         c = copy.deepcopy(self.cfg)
-        for sec, k in (("ai", "api_key"), ("broker", "binance_key"), ("broker", "binance_secret"), ("broker", "bybit_key"), ("broker", "bybit_secret")):
+        for sec, k in SECRETS:
             c[sec]["has_" + k] = bool(c[sec].get(k))
             c[sec][k] = ""
         return c
@@ -158,6 +172,7 @@ class Store:
             self.db.execute("INSERT INTO events(t,level,msg) VALUES(?,?,?)", (int(time.time() * 1000), level, msg))
             self.db.execute("DELETE FROM events WHERE id < (SELECT MAX(id) FROM events) - 500")
             self.db.commit()
+        notify.on_event(self.cfg, level, msg)
 
     def events(self, limit=60):
         with self.lock:

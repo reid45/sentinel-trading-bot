@@ -14,6 +14,7 @@ BTC_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "fu
 
 def mk_store(**over):
     s = Store(path=os.path.join(tempfile.mkdtemp(), "t.db"), cfg_path=os.path.join(tempfile.mkdtemp(), "c.json"))
+    over.setdefault("rules", {"cooldown_min": 0, "pause_after_stops": 0})
     s.save_cfg(over)
     return s
 
@@ -76,7 +77,7 @@ class EngineReplay(unittest.TestCase):
             data.fetch("futures", "BTCUSDT", "4h", years=5)
         allc = data.load_csv(BTC_CACHE)[-2600:]
         start = 800
-        inst = dict(DEFAULTS["instruments"][0])
+        inst = dict(DEFAULTS["instruments"][0], strategy="donchian", params=dict(n=40, trend=0, stop=4.0, trail=1, tp=0, reverse=1))
         s = mk_store(instruments=[inst], risk={"max_positions": 10, "daily_loss_limit_pct": 99, "max_drawdown_halt_pct": 99})
         k = {"i": start}
         eng = Engine(s, fetcher=lambda m, sym, tf, n: allc[:k["i"] + 1][-500:], pricer=lambda m, sym: allc[k["i"]][4])
@@ -623,6 +624,19 @@ class ServerApi(unittest.TestCase):
         self.assertEqual(self.call("/../server.py")[0], 404)                                       # no path traversal
         self.assertEqual(self.call("/api/engine", {"action": "nonsense"})[0], 400)
 
+    def test_oversized_body_and_health(self):
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", 18765, timeout=10)
+        c.request("POST", "/api/engine", body=b"{}", headers={"Content-Type": "application/json", "Content-Length": "5000000"})
+        self.assertEqual(c.getresponse().status, 413)                                    # a huge declared body is refused before it is read
+        c.close()
+        code, b = self.call("/api/health")
+        h = json.loads(b)
+        self.assertEqual(code, 200)
+        self.assertIn(h["level"], ("ok", "warn", "bad"))
+        self.assertTrue(all({"level", "title", "fix"} <= set(i) for i in h["items"]))
+        self.assertEqual(json.loads(self.call("/healthz")[1]), {"ok": True})
+
     def test_static_assets_and_new_endpoints(self):
         import urllib.request as ur
         r = ur.urlopen("http://127.0.0.1:18765/vendor/lwc.js")
@@ -852,6 +866,371 @@ class Cli(unittest.TestCase):
         bad = subprocess.run([sys.executable, os.path.join(root, "sentinel.py"), "status"], capture_output=True, text=True,
                              env=dict(os.environ, SENTINEL_URL="http://127.0.0.1:9"), timeout=30)
         self.assertIn("server not running", bad.stderr)
+
+
+class AuthUnit(unittest.TestCase):
+    def setUp(self):
+        from tradebot.auth import Auth, AuthError
+        self.AuthError = AuthError
+        s = mk_store()
+        self.a = Auth(s.db, s.lock, tempfile.mkdtemp())
+
+    def test_users_passwords_sessions(self):
+        a = self.a
+        for bad in ("short", "password123", "aaaaaaaaaaaa"):
+            with self.assertRaises(self.AuthError):
+                a.create_user("reid", bad, "owner")
+        a.create_user("Reid", "correct horse battery", "owner")
+        with self.assertRaises(self.AuthError):
+            a.create_user("reid", "another long phrase here", "viewer")        # names are unique ignoring case
+        self.assertEqual(a.verify("reid", "correct horse battery"), "Reid")
+        self.assertIsNone(a.verify("reid", "wrong password!!"))
+        self.assertIsNone(a.verify("nobody", "correct horse battery"))
+        who, (tok, life) = a.login("Reid", "correct horse battery", "1.1.1.1", "ua", remember=False)
+        self.assertEqual(a.session(tok), ("Reid", "owner"))
+        self.assertLessEqual(life, 24 * 3600)
+        row = a.db.execute("SELECT h FROM sessions").fetchone()[0]
+        self.assertNotEqual(row, tok)                                           # only a hash of the token is stored
+        a.set_password("Reid", "a brand new passphrase")                          # changing the password signs out every device
+        self.assertIsNone(a.session(tok))
+        with self.assertRaises(self.AuthError):
+            a.delete_user("Reid")                                                # never lock yourself out
+        a.logout(tok)
+
+    def test_lockout_and_idle_expiry(self):
+        a = self.a
+        a.create_user("reid", "correct horse battery", "owner")
+        for _ in range(5):
+            with self.assertRaises(self.AuthError):
+                a.login("reid", "nope nope nope", "9.9.9.9")
+        with self.assertRaises(self.AuthError) as cm:
+            a.login("reid", "correct horse battery", "9.9.9.9")                  # even the right password is refused while locked
+        self.assertIn("Too many", str(cm.exception))
+        with self.assertRaises(self.AuthError):
+            a.login("reid", "correct horse battery", "8.8.8.8")                  # the account is locked too, not just the address
+        a.fails.clear()
+        who, (tok, _) = a.login("reid", "correct horse battery", "9.9.9.9")
+        a.db.execute("UPDATE sessions SET last=last-?", (13 * 3600,))
+        self.assertIsNone(a.session(tok))                                        # idle for 13 hours -> signed out
+
+
+class AuthServer(unittest.TestCase):
+    """The HTTP layer with login turned on: public paths, cookies, CSRF, roles, host checking."""
+    @classmethod
+    def setUpClass(cls):
+        cls.m = ensure_server()
+        cls.m.FORCE_AUTH = True
+        cls.m.PUBLIC_HOSTS.add("sentineltrade.example.ca")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.m.FORCE_AUTH = False
+        cls.m.PUBLIC_HOSTS.discard("sentineltrade.example.ca")
+        cls.m.store.put("auth_required", False)
+        with cls.m.store.lock:
+            cls.m.store.db.execute("DELETE FROM users")
+            cls.m.store.db.execute("DELETE FROM sessions")
+            cls.m.store.db.commit()
+        cls.m.auth.fails.clear()
+
+    def req(self, method, path, body=None, cookie=None, host="127.0.0.1:18765", extra=None):
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", 18765, timeout=30)
+        h = {"Host": host}
+        if cookie:
+            h["Cookie"] = "sentinel_session=" + cookie
+        if body is not None:
+            h["Content-Type"] = "application/json"
+        h.update(extra or {})
+        c.request(method, path, json.dumps(body) if body is not None else None, h)
+        r = c.getresponse()
+        data_ = r.read()
+        sc = r.getheader("Set-Cookie") or ""
+        out = (r.status, data_, sc, r)
+        c.close()
+        return out
+
+    def test_full_flow(self):
+        m = self.m
+        self.assertEqual(self.req("GET", "/healthz")[0], 200)                             # monitors can poll without logging in
+        self.assertEqual(self.req("GET", "/api/state")[0], 401)
+        st, _, _, r = self.req("GET", "/")
+        self.assertEqual((st, r.getheader("Location")), (302, "/login"))
+        self.assertEqual(self.req("GET", "/login")[0], 200)
+        self.assertEqual(self.req("GET", "/app.js")[0], 302)                              # the app itself is not served to strangers
+        self.assertEqual(self.req("GET", "/api/state", host="evil.example.com")[0], 421)  # unknown Host names are refused
+        s = json.loads(self.req("GET", "/api/auth/status")[1])
+        self.assertTrue(s["required"] and s["setup"] and s["need_code"] and not s["authed"])
+        # --- first-run setup needs the one-time code
+        self.assertEqual(self.req("POST", "/api/auth/setup", {"username": "reid", "password": "correct horse battery", "code": "nope"}, extra={"X-Sentinel": "1"})[0], 403)
+        code = m.auth.setup_code()
+        st, b, ck, _ = self.req("POST", "/api/auth/setup", {"username": "reid", "password": "correct horse battery", "code": code})
+        self.assertEqual(st, 200, b)
+        self.assertIn("HttpOnly", ck)
+        self.assertIn("SameSite=Lax", ck)
+        tok = ck.split("sentinel_session=")[1].split(";")[0]
+        self.assertFalse(os.path.exists(os.path.join(TMP, "setup_code.txt")))                # code is single-use
+        self.assertEqual(self.req("POST", "/api/auth/setup", {"username": "xxxxx", "password": "correct horse battery", "code": code})[0], 409)
+        # --- signed-in access
+        st, b, _, _ = self.req("GET", "/api/state", cookie=tok)
+        self.assertEqual(st, 200)
+        me = json.loads(b)["me"]
+        self.assertEqual((me["user"], me["role"], me["auth"]), ("reid", "owner", True))
+        # --- CSRF protections on writes
+        self.assertEqual(self.req("POST", "/api/engine", {"action": "nonsense"}, cookie=tok)[0], 403)                         # missing X-Sentinel
+        self.assertEqual(self.req("POST", "/api/engine", {"action": "nonsense"}, cookie=tok, extra={"X-Sentinel": "1", "Origin": "https://evil.example"})[0], 403)
+        self.assertEqual(self.req("POST", "/api/engine", {"action": "nonsense"}, cookie=tok, extra={"X-Sentinel": "1"})[0], 400)    # reaches the handler
+        self.assertEqual(self.req("POST", "/hook", {"secret": "bad"})[0], 403)                                                # webhook has its own secret, no login
+        # --- a view-only account
+        hdr = {"X-Sentinel": "1"}
+        self.assertEqual(self.req("POST", "/api/auth/users", {"action": "add", "username": "cousin", "password": "viewer pass phrase", "role": "viewer"}, cookie=tok, extra=hdr)[0], 200)
+        st, b, ck2, _ = self.req("POST", "/api/auth/login", {"username": "cousin", "password": "viewer pass phrase"})
+        self.assertEqual(st, 200, b)
+        vt = ck2.split("sentinel_session=")[1].split(";")[0]
+        self.assertEqual(self.req("GET", "/api/state", cookie=vt)[0], 200)
+        self.assertEqual(self.req("POST", "/api/engine", {"action": "kill"}, cookie=vt, extra=hdr)[0], 403)                   # viewers cannot trade or change settings
+        self.assertEqual(self.req("POST", "/api/config", {"risk": {"per_trade_pct": 5}}, cookie=vt, extra=hdr)[0], 403)
+        self.assertEqual(self.req("GET", "/api/auth/users", cookie=vt)[0], 403)
+        # --- sign out really signs out
+        st, _, ck3, _ = self.req("POST", "/api/auth/logout", {}, cookie=vt, extra=hdr)
+        self.assertEqual(st, 200)
+        self.assertIn("Max-Age=0", ck3)
+        self.assertEqual(self.req("GET", "/api/state", cookie=vt)[0], 401)
+        # --- wrong passwords lock the address
+        for _ in range(5):
+            self.req("POST", "/api/auth/login", {"username": "reid", "password": "wrong wrong wrong"})
+        st, b, _, _ = self.req("POST", "/api/auth/login", {"username": "reid", "password": "correct horse battery"})
+        self.assertEqual(st, 429)
+
+
+class Rules(unittest.TestCase):
+    """Entry rules and protections: every refusal is a plain reason, never a silent no-op."""
+    def setUp(self):
+        from tradebot import rules
+        self.rules = rules
+        self.s = mk_store(instruments=[dict(DEFAULTS["instruments"][0])], rules={"cooldown_min": 0, "pause_after_stops": 0})
+        self.inst = self.s.cfg["instruments"][0]
+        self.noon = 1_790_000_000_000 - 1_790_000_000_000 % 86400000 + 12 * 3600000      # a day at 12:00 UTC (not a fixed weekday on purpose)
+
+    def ok(self, side=1, risk=1.0, source="engine", poss=None, now=None):
+        return self.rules.entry_allowed(self.s, self.inst, side, risk, source, 1000.0, poss or {}, now or self.noon)
+
+    def test_hours_direction_and_day_cap(self):
+        self.assertTrue(self.ok()[0])
+        self.s.save_cfg({"rules": {"hours": {"enabled": True, "start": 14, "end": 20, "days": [0, 1, 2, 3, 4, 5, 6]}}})
+        ok, why = self.ok()
+        self.assertFalse(ok); self.assertIn("trading hours", why)
+        self.assertTrue(self.ok(now=self.noon + 3 * 3600000)[0])                        # 15:00 UTC is inside 14-20
+        self.s.save_cfg({"rules": {"hours": {"enabled": True, "start": 22, "end": 6, "days": [0, 1, 2, 3, 4, 5, 6]}}})
+        self.assertTrue(self.ok(now=self.noon + 11 * 3600000)[0])                       # overnight window wraps midnight (23:00)
+        self.s.save_cfg({"rules": {"hours": {"enabled": False}, "direction": "long"}})
+        self.assertFalse(self.ok(side=-1)[0]); self.assertTrue(self.ok(side=1)[0])
+        self.s.save_cfg({"rules": {"direction": "both", "max_trades_day": 1}})
+        self.s.add_trade(inst="x", symbol="ETHUSDT", side=1, qty=1, entry=1, exit=1, pnl=0, fees=0, t_open=self.noon - 1000, t_close=self.noon - 500, reason="target", source="engine", mode="paper")
+        ok, why = self.ok()
+        self.assertFalse(ok); self.assertIn("limit of 1", why)
+
+    def test_cooldown_and_stop_guard_and_risk_cap(self):
+        self.s.save_cfg({"rules": {"cooldown_min": 30}})
+        self.s.add_trade(inst="x", symbol="BTCUSDT", side=1, qty=1, entry=1, exit=1, pnl=-5, fees=0, t_open=self.noon - 3600000, t_close=self.noon - 600000, reason="stop", source="engine", mode="paper")
+        ok, why = self.ok()
+        self.assertFalse(ok); self.assertIn("cooling down", why)
+        self.assertTrue(self.rules.entry_allowed(self.s, dict(self.inst, symbol="ETHUSDT"), 1, 1.0, "engine", 1000.0, {}, self.noon)[0])    # other markets unaffected
+        self.s.save_cfg({"rules": {"cooldown_min": 0, "pause_after_stops": 2, "pause_minutes": 60}})
+        self.s.add_trade(inst="y", symbol="SOLUSDT", side=1, qty=1, entry=1, exit=1, pnl=-5, fees=0, t_open=self.noon - 1800000, t_close=self.noon - 300000, reason="stop", source="engine", mode="paper")
+        ok, why = self.ok()
+        self.assertFalse(ok); self.assertIn("2 stop-outs", why)
+        self.s.save_cfg({"rules": {"pause_after_stops": 0, "max_open_risk_pct": 2.0}})
+        held = {"a": dict(source="day", mark=100.0, entry=100.0, stop=99.0, qty=15.0)}              # $15 already at risk = 1.5% of $1000
+        ok, why = self.ok(source="day", risk=10.0, poss=held)
+        self.assertFalse(ok); self.assertIn("cap is 2.0%", why)
+        self.assertTrue(self.ok(source="day", risk=3.0, poss=held)[0])
+        self.assertTrue(self.ok(source="engine", risk=10.0, poss=held)[0])                           # the cap is for day trades only
+
+
+class Notify(unittest.TestCase):
+    def test_payloads_and_delivery(self):
+        from tradebot import notify
+        import http.server
+        got = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                got.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+                self.send_response(200); self.send_header("Content-Length", "0"); self.end_headers()
+
+            def log_message(self, *a):
+                pass
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        url = "http://127.0.0.1:%d/hook" % srv.server_port
+        self.assertEqual(notify.build({"kind": "discord", "url": url}, "T", "x")[1], {"content": "**T**\nx"})
+        self.assertEqual(notify.build({"kind": "slack", "url": url}, "T", "x")[1], {"text": "*T*\nx"})
+        self.assertEqual(notify.build({"kind": "telegram", "telegram_token": "123:ABC", "telegram_chat": "7"}, "T", "x")[0], "https://api.telegram.org/bot123:ABC/sendMessage")
+        self.assertIsNone(notify.build({"kind": "discord", "url": "http://example.com/plain"}, "T", "x"))          # plain http to the internet is refused
+        self.assertFalse(notify.send({"kind": "discord", "url": ""}, "T", "x", wait=True)[0])
+        ok, err = notify.send({"kind": "generic", "url": url}, "Hello", "world", wait=True)
+        self.assertTrue(ok, err)
+        self.assertEqual(got[-1]["title"], "Hello")
+        # events: a trade open/close reaches the webhook, a skip does not
+        s = mk_store(notify={"kind": "generic", "url": url, "on_open": True, "on_close": True, "on_alert": False})
+        n = len(got)
+        s.event("trade", "DAY BTCUSDT LONG: opened"); s.event("skip", "nothing"); s.event("error", "ignored")
+        time.sleep(0.6)
+        self.assertEqual(len(got) - n, 1)
+        srv.shutdown()
+
+
+class DataFallback(unittest.TestCase):
+    def test_binance_down_falls_back_and_ban_is_respected(self):
+        real_get = data._get
+        calls = []
+
+        def fake(url, timeout=15):
+            calls.append(url)
+            if "fapi.binance.com" in url:
+                raise RuntimeError("HTTP 451")
+            if "bybit.com" in url and "/kline" in url:
+                now = int(time.time() * 1000) // 900000 * 900000
+                rows = [[str(now - i * 900000), "1", "2", "0.5", "1.5", "10", "15"] for i in range(5)]
+                return {"retCode": 0, "result": {"list": rows}}
+            if "bybit.com" in url and "/tickers" in url:
+                return {"result": {"list": [{"lastPrice": "123.5"}]}}
+            raise RuntimeError("unexpected " + url)
+        data._get = fake
+        try:
+            rows = data.fetch_recent("futures", "BTCUSDT", "15m", 4)
+            self.assertTrue(rows and rows[0][0] < rows[-1][0])                                 # oldest first, closed bars only
+            self.assertIn("Bybit", data.LAST_SRC["futures"])
+            self.assertEqual(data.last_price("futures", "BTCUSDT"), 123.5)
+        finally:
+            data._get = real_get
+        data._ban["until"] = time.time() + 60                                                  # a 418 ban: stay off the network entirely
+        try:
+            with self.assertRaises(RuntimeError) as cm:
+                data._get("https://fapi.binance.com/fapi/v1/ping")
+            self.assertIn("slow down", str(cm.exception))
+        finally:
+            data._ban["until"] = 0.0
+
+
+class TrendMix(unittest.TestCase):
+    """One dashboard entry per coin; the engine runs each member strategy as its own sleeve with its own position and stop."""
+    def setUp(self):
+        from tradebot import catalog
+        self.cat = catalog
+        row = catalog.lookup("futures", "BTCUSDT")
+        inst = catalog.make_instrument(row, "4h", True)
+        self.s = mk_store(instruments=[inst], rules={"cooldown_min": 0, "pause_after_stops": 0})
+        self.hist = synth(900, seed=5, drift=0.0012, vol=0.01)
+        self.k = {"i": 600}
+        self.e = Engine(self.s, fetcher=lambda m, sym, tf, n: self.hist[:self.k["i"] + 1][-500:], pricer=lambda m, sym: self.hist[self.k["i"]][4])
+        self.e._lots = {"BTCUSDT": (0.001, 0.001)}
+        self.inst = self.s.cfg["instruments"][0]
+
+    def test_default_is_trendmix_with_four_members(self):
+        self.assertEqual(self.inst["strategy"], "trendmix")
+        self.assertEqual([m["name"] for m in self.inst["params"]["members"]], ["donch20", "donch40", "mtf1d", "ema20_150"])
+        self.assertEqual(len(self.cat.UNIVERSE), 38)
+        self.assertEqual(len([i for i in DEFAULTS["instruments"] if i["market"] == "futures"]), 38)
+
+    def test_sleeves_get_own_positions_and_close_together(self):
+        subs = self.e._sleeves(self.inst)
+        self.assertEqual([s["id"].split("#")[1] for s in subs], ["donch20", "donch40", "mtf1d", "ema20_150"])
+        self.assertEqual(len(self.e._sleeves(dict(self.inst, enabled=False))), 1)           # watch-only coins never trade, so one cheap sleeve is enough
+        for sub in subs[:2]:
+            ok, msg = self.e.open(sub, 1, 100.0, 4.0, source="engine")
+            self.assertTrue(ok, msg)
+        self.assertEqual(sorted(k.split("#")[1] for k in self.s.positions()), ["donch20", "donch40"])
+        self.assertFalse(self.e.open(subs[0], 1, 100.0, 4.0)[0])                              # a sleeve cannot stack on itself
+        self.assertEqual(self.e._inst_for(subs[1]["id"])["id"], subs[1]["id"])
+        self.assertTrue(self.e.close_by_id(self.inst["id"], "test"))                          # closing the coin closes every sleeve
+        self.assertEqual(self.s.positions(), {})
+        self.assertEqual(len(self.s.trades(10)), 2)
+
+    def test_cycle_runs_sleeves_and_reports_one_status(self):
+        st = {"last_ts": None, "price": None, "signal": 0, "error": None, "price_t": 0}
+        self.e._cc = {}
+        for sub in self.e._sleeves(self.inst):
+            self.e._process(sub, self.e.sub_status.setdefault(sub["id"], dict(st)))
+        self.assertTrue(all(v["error"] is None for v in self.e.sub_status.values()))
+        self.assertEqual(len(self.e.sub_status), 4)
+
+    def test_dead_contract_never_signals(self):
+        flat = [(r[0], 5.0, 5.0, 5.0, 5.0, 0.0) for r in self.hist]
+        e = Engine(self.s, fetcher=lambda m, sym, tf, n: flat[:700], pricer=lambda m, sym: 5.0)
+        st = {"last_ts": None, "price": None, "signal": 0, "error": None, "price_t": 0}
+        e._process(self.e._sleeves(self.inst)[0], st)
+        self.assertIn("no volume", st["error"])
+        self.assertEqual(self.s.positions(), {})
+
+    def test_portfolio_backtester_shares_one_account(self):
+        coins = [("C%d" % i, synth(1200, seed=20 + i, drift=0.001, vol=0.01), "donchian", dict(n=20, trend=0, stop=3.0, trail=1, reverse=0)) for i in range(6)]
+        m = B.portfolio_run(coins, "4h", risk=0.01, max_pos=2, max_lev=3.0)
+        self.assertGreater(m["trades"], 5)
+        starts = sorted((t[0], t[1]) for t in m["trade_list"])
+        for t0, _ in starts:
+            self.assertLessEqual(sum(1 for a, b in starts if a <= t0 < b), 2)                  # never more than max_pos open at once
+        wide = B.portfolio_run(coins, "4h", risk=0.01, max_pos=6, max_lev=3.0)
+        self.assertGreaterEqual(wide["trades"], m["trades"])
+
+    def test_preset_and_lab_endpoints(self):
+        srv = ensure_server()
+        before = json.loads(json.dumps(srv.store.cfg))
+        try:
+            srv.store.save_cfg({"instruments": [dict(i) for i in before["instruments"] if i["market"] == "futures"][:3] + [i for i in before["instruments"] if i["market"] != "futures"][:1]})
+            code, out = srv.preset_action({"name": "trendmix"})
+            self.assertEqual(code, 200, out)
+            fut = [i for i in srv.store.cfg["instruments"] if i["market"] == "futures"]
+            self.assertEqual(len(fut), 38)
+            self.assertTrue(all(i["strategy"] == "trendmix" and i["tf"] == "4h" for i in fut))
+            self.assertEqual((srv.store.cfg["risk"]["per_trade_pct"], srv.store.cfg["risk"]["max_positions"]), (0.3, 15))
+            self.assertEqual(srv.preset_action({"name": "nope"})[0], 400)
+            c = synth(900, seed=9, drift=0.001, vol=0.01)
+            m = srv.run_any(c, "trendmix", self.cat.defaults_for("futures")[1], "futures", "4h", 0.003)
+            self.assertIn("curve", m)
+            self.assertEqual(len(m["curve"]), len(c))
+        finally:
+            srv.store.cfg = before
+            srv.store.save_cfg()
+
+
+class EvidenceTools(unittest.TestCase):
+    def hist15(self, n=1500, seed=4):
+        h = synth(n, seed=seed, drift=0.0, vol=0.004)
+        return [(1_790_000_000_000 - (n - i) * 900000, o, hh, ll, c, 50.0 + (i % 7)) for i, (_, o, hh, ll, c, _) in enumerate(h)]
+
+    def test_levels_and_mtf_shape(self):
+        from tradebot import tools
+        h = self.hist15()
+        lv = tools.levels(h)
+        self.assertIn("prev_day_high", lv); self.assertIn("swing_highs_above", lv)
+        self.assertTrue(all(x[0] > lv["price"] for x in lv["swing_highs_above"]))             # "above" really is above
+        self.assertTrue(all(x[0] < lv["price"] for x in lv["swing_lows_below"]))
+        out = tools.mtf(lambda m, s, tf, n: self.hist15(n=300), "futures", "BTCUSDT")
+        self.assertEqual(len(out.splitlines()), 4)
+        self.assertIn("ADX", out)
+
+    def test_edge_charges_costs_and_is_causal(self):
+        from tradebot import tools
+        h = self.hist15()
+        e = tools.edge(h, "breakout")
+        self.assertGreater(e["follow"]["n"], 20)
+        self.assertEqual(e["follow"]["n"], e["fade"]["n"])                                     # same triggers, opposite sides
+        self.assertLess(e["follow"]["expR"] + e["fade"]["expR"], 0)                           # a coin flip cannot pay both ways once fees are charged
+        trig, _ = tools._triggers(h)
+        cut = tools._triggers(h[:900])[0]
+        self.assertEqual(trig[500], cut[500])                                                 # a bar's trigger never depends on later bars
+
+    def test_tool_dispatch_and_schema(self):
+        from tradebot import analyst
+        names = [t["function"]["name"] for t in analyst.TOOLS]
+        for n in ("candles", "derivs", "journal", "levels", "mtf", "flow", "edge"):
+            self.assertIn(n, names)
+        s = mk_store(instruments=[dict(DEFAULTS["instruments"][0])])
+        out = analyst.run_tool("levels", {"symbol": "BTCUSDT"}, s, lambda m, sy, tf, n: self.hist15(n=1200))
+        self.assertIn("prev_day_high", out)
+        self.assertEqual(analyst.run_tool("levels", {"symbol": "NOPE"}, s, lambda *a: []), "unknown symbol")
 
 
 if __name__ == "__main__":

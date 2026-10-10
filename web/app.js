@@ -6,13 +6,14 @@ const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 let sheetLock = false;
 let S = null, page = "portfolio", sel = null, simple = LS.get("simple", "1") === "1", soundOn = LS.get("sound", "0") === "1", lastEv = null;
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const money = (v, d = 2) => (v < 0 ? "-" : "") + "$" + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+let CURSYM = "$", CLOCK12 = false; function setFmt(sym, h12) { CURSYM = sym; CLOCK12 = h12; }
+const money = (v, d = 2) => (v < 0 ? "-" : "") + CURSYM + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
 const sm = (v, d = 2) => (v >= 0 ? "+" : "-") + money(Math.abs(v), d).replace("-", "");
 const pct = (v, d = 2) => (v >= 0 ? "+" : "") + v.toFixed(d) + "%";
 const cls = v => v > 0 ? "up" : v < 0 ? "down" : "";
 const px = v => v == null ? "--" : v >= 1000 ? v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : v >= 10 ? v.toFixed(3) : v >= 1 ? v.toFixed(4) : v.toPrecision(4);
 const dt = t => new Date(t).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-const tm = t => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const tm = t => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: CLOCK12 });
 const dur = ms => ms <= 0 ? "now" : ms >= 3600000 ? Math.floor(ms / 3600000) + "h " + Math.floor(ms % 3600000 / 60000) + "m" : Math.max(1, Math.floor(ms / 60000)) + "m";
 const NAMES = { BTC: "Bitcoin", ETH: "Ethereum", SOL: "Solana", BNB: "BNB", XRP: "XRP", DOGE: "Dogecoin", ADA: "Cardano", LINK: "Chainlink", LTC: "Litecoin", AVAX: "Avalanche", EURUSD: "Euro / US Dollar", GBPUSD: "Pound / US Dollar", USDJPY: "US Dollar / Yen" };
 const short = i => i.symbol.replace("=X", "").replace("USDT", "");
@@ -31,8 +32,9 @@ const bar = { n: 0, start() { this.n++; const b = $("#bar"); b.style.opacity = 1
 async function api(path, body, quiet) {
   if (!quiet) bar.start();
   try {
-    const r = await fetch(path, body === undefined ? { cache: "no-store" } : { method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const r = await fetch(path, body === undefined ? { cache: "no-store" } : { method: "POST", cache: "no-store", headers: { "Content-Type": "application/json", "X-Sentinel": "1" }, body: JSON.stringify(body) });
     const j = await r.json().catch(() => ({}));
+    if (r.status === 401 && j.error === "login") { location.href = "/login"; throw new Error("Please sign in again"); }
     if (!r.ok) throw new Error(j.error || r.statusText);
     return j;
   } finally { if (!quiet) bar.done(); }
@@ -89,11 +91,12 @@ document.addEventListener("mouseout", e => { if (e.target.closest("[data-tip]"))
 
 /* ---------- charts (TradingView Lightweight Charts) */
 const COL = { up: "#2ed3a0", down: "#ff5e7a", acc: "#7c9cff", acc2: "#b48cff", warn: "#ffb454" };
+const cssv = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 function mkChart(el, extra) {
   return LightweightCharts.createChart(el, Object.assign({
-    autoSize: true, layout: { background: { type: "solid", color: "rgba(0,0,0,0)" }, textColor: "#6a7280", fontFamily: "Inter, system-ui, sans-serif", fontSize: 11 },
-    grid: { vertLines: { color: "rgba(255,255,255,.025)" }, horzLines: { color: "rgba(255,255,255,.04)" } },
-    crosshair: { mode: 1, vertLine: { color: "rgba(255,255,255,.28)", style: 3, labelBackgroundColor: "#242a36" }, horzLine: { color: "rgba(255,255,255,.28)", style: 3, labelBackgroundColor: "#242a36" } },
+    autoSize: true, layout: { background: { type: "solid", color: "rgba(0,0,0,0)" }, textColor: cssv("--tx3"), fontFamily: "Inter, system-ui, sans-serif", fontSize: 11 },
+    grid: { vertLines: { color: cssv("--w025") }, horzLines: { color: cssv("--w04") } },
+    crosshair: { mode: 1, vertLine: { color: cssv("--tx3"), style: 3, labelBackgroundColor: cssv("--tipbg") }, horzLine: { color: cssv("--tx3"), style: 3, labelBackgroundColor: cssv("--tipbg") } },
     rightPriceScale: { borderVisible: false, scaleMargins: { top: .08, bottom: .2 } }, timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false, rightOffset: 5 },
     localization: { locale: navigator.language }
   }, extra || {}));
@@ -156,7 +159,7 @@ async function refresh() {
   $("#modeChip").textContent = e.mode === "live" ? "Exchange mode" : "Practice mode"; $("#modeChip").style.color = e.mode === "live" ? "var(--down)" : "";
   roll($("#acctTxt"), money(e.equity)); $("#engSeg").set(e.running ? "run" : "pause");
   celebrate(S.events); liveTick();
-  aiChipUpdate();
+  aiChipUpdate(); if (typeof CUST !== "undefined") CUST.onState(S);
   if (page === "trade") renderTrade(); else if (page === "portfolio") renderPortfolio(); else if (page === "trader") renderTrader();
 }
 function celebrate(evs) {
@@ -191,23 +194,23 @@ function spark(arr, up) {
 function renderTrade() {
   if (!$("#tName")) { buildTrade(); ensureChart(); }
   const e = S.engine, ins = insts(), i = S.cfg.instruments.find(x => x.id === sel); if (!i) return;
-  const st = e.status[i.id] || {}, pos = e.positions.find(p => p.id === i.id), s = short(i);
+  const st = e.status[i.id] || {}, pos = e.positions.find(p => p.id === i.id || String(p.id).startsWith(i.id + "#")), s = short(i);
   setHTML($("#tCoin"), coinHTML(i)); $("#tName").textContent = nameOf(i); $("#tSub").textContent = ({ futures: s + "USDT perpetual", forex: "Forex", stock: CATLBL[i.cat] || "Stock" })[i.market] + " · " + (chartTf || i.tf) + " candles"; $("#tfSeg").set(chartTf || i.tf);
   roll($("#tPrice"), px(st.price)); const ch = $("#tChg"), c24 = (sparks[i.id] || {}).c || 0; ch.textContent = pct(c24) + " 24h"; ch.className = "pill " + (c24 >= 0 ? "up" : "down");
-  $("#tStrat").textContent = { donchian: "Breakout strategy", emacross: "EMA cross strategy", pullback: "Pullback strategy" }[i.strategy] || i.strategy;
+  $("#tStrat").textContent = { trendmix: "Trend mix (4 systems)", donchian: "Breakout strategy", emacross: "EMA cross strategy", pullback: "Pullback strategy", mtf_break: "Trend-filtered breakout" }[i.strategy] || i.strategy;
   const nb = st.next_bar ? st.next_bar - e.now : null; let msg;
   if (st.error) msg = `<svg class="i" data-i="shield-alert"></svg><span>Data hiccup on this market: <b>${esc(st.error)}</b>. Retrying automatically.</span>`;
   else if (pos) msg = `<svg class="i" data-i="${pos.side > 0 ? "trending-up" : "trending-down"}"></svg><span>Holding a <b>${sideWord(pos.side)}</b> position, <b class="${cls(pos.upnl)}">${sm(pos.upnl)}</b> so far. Safety stop at <b>${px(pos.stop)}</b>.</span>`;
   else msg = `<svg class="i" data-i="activity"></svg><span>${st.signal ? "A signal just fired - I'm checking risk limits." : "Watching for a breakout."} Next ${TFLBL[i.tf] || i.tf} candle closes in <b>${nb == null ? "--" : dur(nb)}</b>.</span>`;
   setHTML($("#tStatus"), msg);
-  const wl = ins.map(x => { const t = e.status[x.id] || {}, sp = sparks[x.id] || {}, up = (sp.c || 0) >= 0, hold = e.positions.some(p => p.id === x.id || p.id === "day:" + x.id);
+  const wl = ins.map(x => { const t = e.status[x.id] || {}, sp = sparks[x.id] || {}, up = (sp.c || 0) >= 0, hold = e.positions.some(p => p.id === x.id || p.id === "day:" + x.id || String(p.id).startsWith(x.id + "#"));
     return `<div class="wl-item ${x.id === sel ? "on" : ""}" data-id="${esc(x.id)}">${coinHTML(x)}<div><div class="t1">${hold ? '<span class="dot"></span>' : ""}${esc(short(x))}</div><div class="t2">${esc(nameOf(x))}</div></div><div>${spark(sp.s, up)}</div><div class="r"><div class="t1">${px(t.price)}</div><div class="t2 ${up ? "up" : "down"}">${pct(sp.c || 0, 1)}</div></div><button class="star ${x.fav ? "on" : ""}" data-fav="${esc(x.id)}">&#9733;</button></div>`; }).join("");
   if (setHTML($("#wl"), wl)) $$(".wl-item", $("#wl")).forEach(el => el.onclick = ev => { if (ev.target.closest("[data-fav]")) { ev.stopPropagation(); const id = el.dataset.id; return favApi(id, !S.cfg.instruments.find(x => x.id === id).fav); } sel = el.dataset.id; chartTf = null; loadChart(true); renderTrade(); }); $("#wlN").textContent = ins.length;
   renderDock();
 }
 function renderDock(force) {
   const e = S.engine; let h;
-  if (dock === "pos") h = e.positions.length ? `<table><tr><th>Market</th><th>Side</th><th>Size</th><th>Entry</th><th>Price</th><th>Stop</th><th>Profit now</th><th></th></tr>${e.positions.map(p => `<tr><td class="t"><b>${esc(p.symbol.replace("=X", ""))}</b></td><td>${sidePill(p.side)}</td><td>${(+p.qty).toPrecision(3)}</td><td>${px(p.entry)}</td><td>${px(p.mark)}</td><td>${px(p.stop)}</td><td class="${cls(p.upnl)}">${sm(p.upnl)}</td><td><button class="btn sm" data-close="${esc(p.id)}">Close</button></td></tr>`).join("")}</table>` : `<div class="empty">No open trades. I only enter on a confirmed breakout, so quiet stretches are normal.</div>`;
+  if (dock === "pos") h = e.positions.length ? `<table><tr><th>Market</th><th>Side</th><th>Size</th><th>Entry</th><th>Price</th><th>Stop</th><th>Profit now</th><th></th></tr>${e.positions.map(p => `<tr><td class="t"><b>${esc(p.symbol.replace("=X", ""))}</b>${p.id && String(p.id).includes("#") ? ` <span class="sub">${esc(String(p.id).split("#")[1])}</span>` : (String(p.id).startsWith("day:") ? ' <span class="sub">day trade</span>' : "")}</td><td>${sidePill(p.side)}</td><td>${(+p.qty).toPrecision(3)}</td><td>${px(p.entry)}</td><td>${px(p.mark)}</td><td>${px(p.stop)}</td><td class="${cls(p.upnl)}">${sm(p.upnl)}</td><td><button class="btn sm" data-close="${esc(p.id)}">Close</button></td></tr>`).join("")}</table>` : `<div class="empty">No open trades. I only enter on a confirmed breakout, so quiet stretches are normal.</div>`;
   else if (dock === "act") h = S.events.length ? `<table>${S.events.map(v => `<tr><td class="mono" style="color:var(--tx3)">${tm(v.t)}</td><td><span class="pill ${{ trade: "acc", close: "up", error: "down", skip: "", info: "" }[v.level] || ""}">${{ trade: "Opened", close: "Closed", error: "Alert", skip: "Skipped", info: "System" }[v.level] || v.level}</span></td><td class="t">${esc(v.msg)}</td></tr>`).join("")}</table>` : '<div class="empty">Nothing yet.</div>';
   else { if (force || Date.now() - dockH > 15000) { dockH = Date.now(); api("/api/trades?n=60", undefined, true).then(t => { dockData = t; if (dock === "his") renderDock(); }); } h = histTable(dockData); }
   if (setHTML($("#dockBody"), h)) $$("[data-close]", $("#dockBody")).forEach(b => b.onclick = guard(async () => { await api("/api/engine", { action: "close", inst: b.dataset.close }); refresh(); }));
@@ -258,7 +261,7 @@ function renderPortfolio() {
   setHTML($("#kpis"), kpiSet(e, r, ps));
   const gross = ps.reduce((a, p) => a + p.qty * (p.mark || p.entry), 0), ex = gross / (e.equity * r.max_total_leverage), dy = Math.max(0, -e.day_pnl_pct) / r.daily_loss_limit_pct, dd = e.drawdown_pct / r.max_drawdown_halt_pct;
   setHTML($("#meters"), meter("Daily loss limit", dy, (dy * 100).toFixed(0) + "% used", "At 100% I stop opening trades until tomorrow.") + meter("Emergency brake", dd, (dd * 100).toFixed(0) + "% of limit", "How far the account has fallen from its peak, compared with the level that closes everything and halts the bot.") + meter("Money in trades", ex, (ex * 100).toFixed(0) + "% of max", "How much of the allowed position size is in use right now."));
-  if (setHTML($("#pPos"), ps.length ? `<table><tr><th>Market</th><th>Side</th><th>Profit now</th><th>Stop</th></tr>${ps.map(p => `<tr><td class="t"><b>${esc(p.symbol.replace("=X", ""))}</b></td><td>${sidePill(p.side)}</td><td class="${cls(p.upnl)}">${sm(p.upnl)}</td><td>${px(p.stop)}</td></tr>`).join("")}</table>` : '<div class="empty">No open trades right now.</div>')) { }
+  if (setHTML($("#pPos"), ps.length ? `<table><tr><th>Market</th><th>Side</th><th>Profit now</th><th>Stop</th></tr>${ps.map(p => `<tr><td class="t"><b>${esc(p.symbol.replace("=X", ""))}</b>${p.id && String(p.id).includes("#") ? ` <span class="sub">${esc(String(p.id).split("#")[1])}</span>` : (String(p.id).startsWith("day:") ? ' <span class="sub">day trade</span>' : "")}</td><td>${sidePill(p.side)}</td><td class="${cls(p.upnl)}">${sm(p.upnl)}</td><td>${px(p.stop)}</td></tr>`).join("")}</table>` : '<div class="empty">No open trades right now.</div>')) { }
 }
 async function drawEq() {
   if (!PF.series) return; PF.eq = await api("/api/equity", undefined, true); const e = S.engine, now = Date.now();
@@ -324,6 +327,7 @@ function buildSettings() {
    <div class="card pro" style="margin-top:14px;--i:4"><h3>Markets <button class="btn sm" id="addInst">Add market</button></h3><div class="scroll" style="max-height:none" id="instTable"></div></div>
    <div class="row" style="margin-top:16px"><button class="btn pri" id="sSave">Save settings</button><button class="btn" id="sResume">Resume after halt</button><span class="grow"></span><button class="btn danger" id="sReset">Reset paper account</button></div></div>`;
   seg($("#spdSeg"), v => { if (v !== S.cfg.instruments[0].tf) setSpeed(v, $("#spdSeg")); });
+  if (typeof CUST !== "undefined") CUST.settings();
   $("#sMode").onchange = () => { $("#liveBox").style.display = $("#sMode").value === "live" && S.cfg.mode !== "live" ? "block" : "none"; };
   $("#sAcct").onclick = e => openAcct(e.currentTarget); $("#bEx").onchange = () => fillNets($("#bEx").value);
   $("#sPro").onchange = e => { simple = !e.target.checked; LS.set("simple", simple ? "1" : "0"); applyView(); }; $("#sSound").onchange = e => { soundOn = e.target.checked; LS.set("sound", soundOn ? "1" : "0"); beep([600, 900]); };

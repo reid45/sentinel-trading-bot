@@ -3,15 +3,31 @@
   py sentinel.py start | stop | kill | resume | flatten | close <instrument-id>
   py sentinel.py backtest <SYMBOL> [--market futures|forex] [--strategy donchian] [--years 5] [--optimize]
   py sentinel.py portfolio | ai-test | config [key.path [value]] | broker-test
+  py sentinel.py doctor            check this computer can reach every data feed, and how the server is set up
+  py sentinel.py health            what the app currently reports as issues
+  py sentinel.py passwd <user>     set or reset a sign-in password (works with the server stopped)
+  py sentinel.py auth-off          turn sign-in off again (recovery, run on the server machine)
 Set SENTINEL_URL to point at another port (default http://127.0.0.1:8765)."""
 import json, os, sys, time, urllib.error, urllib.request
 
 BASE = os.environ.get("SENTINEL_URL", "http://127.0.0.1:8765")
 
 
+ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+def _headers():
+    h = {"Content-Type": "application/json"}
+    try:                                                    # when sign-in is on, this machine's token lets the CLI through
+        with open(os.path.join(os.environ.get("TRADEBOT_DATA") or os.path.join(ROOT, "data"), "cli_token.txt")) as f:
+            h["Authorization"] = "Bearer " + f.read().strip()
+    except OSError:
+        pass
+    return h
+
+
 def call(path, body=None):
-    req = urllib.request.Request(BASE + path, data=json.dumps(body).encode() if body is not None else None,
-                                 headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(BASE + path, data=json.dumps(body).encode() if body is not None else None, headers=_headers())
     try:
         return json.loads(urllib.request.urlopen(req, timeout=120).read())
     except urllib.error.HTTPError as e:
@@ -49,6 +65,73 @@ def show_metrics(label, m):
           (label, m["ret"] * 100, m["cagr"] * 100, m["mdd"] * 100, m["sharpe"], m["trades"]))
 
 
+def doctor():
+    """Everything a new host needs: Python, writable data folder, and every feed the bot uses, timed. Makes no AI calls and sends no secrets."""
+    import platform, socket, urllib.parse
+    sys.path.insert(0, ROOT)
+    ok = lambda s: print("  [ OK ] " + s)
+    bad = lambda s: print("  [FAIL] " + s)
+    print("Sentinel doctor")
+    (ok if sys.version_info >= (3, 7) else bad)("Python %s (needs 3.7+)" % platform.python_version())
+    d = os.environ.get("TRADEBOT_DATA") or os.path.join(ROOT, "data")
+    try:
+        os.makedirs(d, exist_ok=True)
+        t = os.path.join(d, ".w")
+        open(t, "w").write("x")
+        os.remove(t)
+        ok("data folder writable: " + d)
+    except OSError as e:
+        bad("data folder not writable: %s" % e)
+    feeds = [("Binance futures prices", "https://fapi.binance.com/fapi/v1/ping"), ("Binance spot (backup)", "https://data-api.binance.vision/api/v3/ping"),
+             ("Bybit prices (backup)", "https://api.bybit.com/v5/market/time"), ("Yahoo Finance (forex, stocks)", "https://query1.finance.yahoo.com/v1/finance/search?q=EURUSD&quotesCount=1&newsCount=0")]
+    for name, url in feeds:
+        t0 = time.time()
+        try:
+            urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"}), timeout=8).read(200)
+            ok("%s reachable (%d ms)" % (name, (time.time() - t0) * 1000))
+        except urllib.error.HTTPError as e:
+            hint = {451: " - blocked in this country/region", 403: " - blocked or rate limited", 418: " - temporarily banned for too many requests (wait; it clears itself)", 429: " - rate limited"}.get(e.code, "")
+            bad("%s: HTTP %d%s" % (name, e.code, hint))
+        except Exception as e:
+            bad("%s: %s" % (name, str(e)[:70]))
+    print("  host name: %s | listening address: %s:%s | login: %s" % (socket.gethostname(), os.environ.get("HOST", "127.0.0.1"), os.environ.get("PORT", "8765"),
+          "forced on" if os.environ.get("SENTINEL_AUTH") or os.environ.get("SENTINEL_HOSTS") else "optional (turn on in Settings)"))
+    if os.environ.get("SENTINEL_HOSTS"):
+        print("  public host names: " + os.environ["SENTINEL_HOSTS"])
+    print("  Binance must be reachable (or Bybit as backup) for crypto. If both fail from this machine, host Sentinel somewhere else.")
+
+
+def passwd(user):
+    import getpass
+    sys.path.insert(0, ROOT)
+    from tradebot.store import Store
+    from tradebot.auth import Auth, AuthError
+    if not user:
+        raise SystemExit("usage: py sentinel.py passwd <username>")
+    s = Store()
+    a = Auth(s.db, s.lock, os.environ.get("TRADEBOT_DATA") or os.path.join(ROOT, "data"))
+    p1 = getpass.getpass("New password for %s (10+ characters): " % user)
+    if p1 != getpass.getpass("Repeat: "):
+        raise SystemExit("passwords differ")
+    try:
+        if a.role_of(user):
+            a.set_password(user, p1)
+            print("password changed; that user was signed out everywhere")
+        else:
+            a.create_user(user, p1, "owner" if not a.has_users() else "viewer")
+            s.put("auth_required", True)
+            print("account created (%s)" % ("owner" if a.role_of(user) == "owner" else "viewer"))
+    except AuthError as e:
+        raise SystemExit("error: %s" % e)
+
+
+def auth_off():
+    sys.path.insert(0, ROOT)
+    from tradebot.store import Store
+    Store().put("auth_required", False)
+    print("sign-in turned off (unless SENTINEL_AUTH / SENTINEL_HOSTS force it on). Restart the server.")
+
+
 def main(a):
     if not a or a[0] in ("-h", "--help", "help"):
         print(__doc__)
@@ -76,6 +159,18 @@ def main(a):
     elif cmd == "events":
         for e in reversed(call("/api/state")["events"][:int(rest[0]) if rest else 20]):
             print(time.strftime("%H:%M:%S", time.localtime(e["t"] / 1000)), e["level"].ljust(6), e["msg"])
+    elif cmd == "health":
+        r = call("/api/health")
+        for i in r["items"]:
+            print("%-5s %s%s" % (i["level"].upper(), i["title"], (" - " + i["detail"]) if i["detail"] else ""))
+            if i["fix"] and i["level"] in ("warn", "bad"):
+                print("      fix: " + i["fix"])
+    elif cmd == "doctor":
+        doctor()
+    elif cmd == "passwd":
+        passwd(rest[0] if rest else "")
+    elif cmd == "auth-off":
+        auth_off()
     elif cmd in ("start", "stop", "kill", "resume", "flatten"):
         call("/api/engine", {"action": cmd})
         print("ok:", cmd)

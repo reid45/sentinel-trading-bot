@@ -1,0 +1,7 @@
+data/
+.git/
+.claude/
+.scratch/
+research/*.log
+__pycache__/
+*.pyc

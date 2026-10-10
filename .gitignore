@@ -5,3 +5,5 @@ data/
 .claude/
 
 .scratch/
+
+research/*.log

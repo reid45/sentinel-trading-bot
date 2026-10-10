@@ -4,7 +4,7 @@ Token/cost design (per DeepSeek docs): context caching is automatic on identical
 and the per-signal dossier goes last. Non-thinking mode, short JSON answer, max 2 tool rounds, hard daily/total budget,
 per-(market,bar,side) memo so a retry never re-bills, circuit breaker on repeated failures. Any failure fails open."""
 import json, time, threading
-from . import context, data, llm
+from . import context, data, llm, tools as evidence
 
 SYSTEM = (
     "You are Sentinel's signal analyst for a mechanical 4h trend-following breakout bot on crypto perpetuals. "
@@ -22,7 +22,7 @@ TOOLS = [
                                        "parameters": {"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]}}},
     {"type": "function", "function": {"name": "journal", "description": "The bot's last closed trades on a market.",
                                        "parameters": {"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]}}},
-]
+] + evidence.TOOLS
 # USD per 1M tokens: (off-peak, peak) per DeepSeek pricing page. Unknown models are costed as flash-at-peak (conservative).
 PRICES = {"deepseek-flash": dict(hit=(0.003, 0.006), miss=(0.15, 0.30), out=(0.6, 1.2)),
           "deepseek-v4-pro": dict(hit=(0.022, 0.044), miss=(0.66, 1.32), out=(1.98, 3.96))}
@@ -103,6 +103,8 @@ def run_tool(name, args, store, fetch):
     inst = {i["symbol"].upper(): i for i in store.cfg["instruments"]}.get(str(args.get("symbol", "")).upper())
     if not inst:
         return "unknown symbol"
+    if name in ("levels", "mtf", "flow", "edge"):
+        return evidence.run(name, args, inst, fetch) or "unknown tool"
     if name == "derivs":
         return render_derivs(derivs(inst["symbol"])) if inst["market"] == "futures" else "n/a (not a crypto perp)"
     if name == "journal":

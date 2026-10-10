@@ -1,0 +1,34 @@
+/* Customization layer: themes, accents, density, palettes, hidden sections, account chip. Loaded after style.css. */
+:root[data-theme="light"]{
+ --w015:rgba(14,18,30,0.017);--w02:rgba(14,18,30,0.023);--w025:rgba(14,18,30,0.029);--w04:rgba(14,18,30,0.046);--w045:rgba(14,18,30,0.052);--w05:rgba(14,18,30,0.057);--w06:rgba(14,18,30,0.069);--w07:rgba(14,18,30,0.081);--w08:rgba(14,18,30,0.092);--w09:rgba(14,18,30,0.103);--w1:rgba(14,18,30,0.115);--w12:rgba(14,18,30,0.138);
+ --bg:#f2f3f7;--bg2:#e9ebf1;--panel:#ffffff;--panel2:#f5f6fa;--tipbg:#ffffff;
+ --tx:#12141b;--tx2:#4a5161;--tx3:#7a8191;--up:#0d9b73;--down:#d6334f;--warn:#b76e00;
+ color-scheme:light}
+:root[data-theme="light"] body{background:radial-gradient(1100px 520px at 72% -12%,color-mix(in srgb,var(--acc) 12%,transparent),transparent 62%),radial-gradient(800px 480px at -8% 108%,color-mix(in srgb,var(--acc2) 9%,transparent),transparent 60%),var(--bg)}
+:root[data-theme="light"] .card{box-shadow:inset 0 1px 0 #fff,0 18px 40px -28px rgba(30,40,70,.35);background:linear-gradient(180deg,#fff,#fbfbfd)}
+:root[data-theme="light"] .nav button::after,:root[data-theme="light"] .tip{box-shadow:0 10px 30px -10px rgba(30,40,70,.35);color:var(--tx)}
+:root[data-theme="light"] .scrim{background:rgba(230,233,242,.7)}
+:root[data-theme="light"] .btn.pri,:root[data-theme="light"] .btn.pri svg{color:#fff}
+:root[data-theme="light"] #views::-webkit-scrollbar-thumb,:root[data-theme="light"] .scroll::-webkit-scrollbar-thumb{background:rgba(14,18,30,.18)}
+/* density + sizing */
+body{zoom:var(--zoom,1)}
+body.dense .card{padding:12px 14px}body.dense #views{padding:14px 16px 30px}body.dense #topbar{padding:9px 16px}body.dense table td,body.dense table th{padding-top:5px;padding-bottom:5px}
+body.nomotion *,body.nomotion *::before,body.nomotion *::after{animation:none!important;transition:none!important}
+/* home sections the owner switched off */
+body.hide-insight .sec-insight,body.hide-kpis .sec-kpis,body.hide-safety .sec-safety,body.hide-open .sec-open,body.hide-markets .sec-markets{display:none!important}
+/* account chip + menu */
+#userChip{display:inline-flex}#userChip .av{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:700;color:#0a0b10;background:linear-gradient(135deg,var(--acc),var(--acc2))}
+.swatches{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px}
+.swatch{width:26px;height:26px;border-radius:50%;border:2px solid transparent;cursor:pointer;box-shadow:0 0 0 1px var(--line2);transition:transform var(--d2) var(--spring)}
+.swatch:hover{transform:scale(1.12)}.swatch.on{border-color:var(--tx);transform:scale(1.08)}
+.cust-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;align-items:start}
+.kv{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:10px 0;border-bottom:1px solid var(--line)}.kv:last-child{border-bottom:0}
+.kv b{font-weight:550}.kv .sub{display:block}
+.days{display:flex;gap:6px;flex-wrap:wrap}.days label{display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:4px 9px;border-radius:99px;border:1px solid var(--line2);cursor:pointer;color:var(--tx2)}
+.days input{accent-color:var(--acc)}
+.ulist{width:100%;border-collapse:collapse}.ulist td{padding:8px 4px;border-bottom:1px solid var(--line)}
+.kbadge{display:inline-block;padding:2px 9px;border-radius:99px;font-size:11px;font-weight:600;border:1px solid var(--line2);color:var(--tx2)}
+.kbadge.owner{color:var(--acc);border-color:color-mix(in srgb,var(--acc) 50%,transparent)}
+input[type=color]{width:42px;height:30px;padding:0;border:1px solid var(--line2);border-radius:8px;background:none;cursor:pointer}
+
+input[type=range]{accent-color:var(--acc);width:150px}.kv>div:first-child{min-width:0}

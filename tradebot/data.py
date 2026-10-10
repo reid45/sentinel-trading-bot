@@ -1,21 +1,81 @@
 """Market data (public endpoints, no API keys): Binance spot/futures, Yahoo (forex). CSV-cached."""
-import os, csv, json, time, urllib.request, urllib.parse
+import os, csv, json, threading, time, urllib.error, urllib.request, urllib.parse
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+DATA_DIR = os.environ.get("TRADEBOT_DATA") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 TF_MS = {"1m": 60000, "5m": 300000, "15m": 900000, "1h": 3600000, "4h": 14400000, "1d": 86400000}
 UA = {"User-Agent": "Mozilla/5.0"}
 
+_ban = {"until": 0.0}                       # Binance answered 418/429: stay off the network until this time so the ban is never extended
+_pace = {"lock": threading.Lock(), "t": 0.0}
+
+
+def _pace_wait(gap=0.45):
+    """Bulk (multi-page) downloads share one global pace, keeping request weight far below Binance's 2400/min limit."""
+    with _pace["lock"]:
+        now = time.time()
+        time.sleep(max(0.0, _pace["t"] + gap - now))
+        _pace["t"] = time.time()
+
+
 def _get(url, timeout=15):
+    binance = "binance" in url
+    if binance and time.time() < _ban["until"]:
+        raise RuntimeError("Binance asked us to slow down; paused for another %ds" % (_ban["until"] - time.time()))
     for attempt in range(3):
         try:
             return json.loads(urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=timeout).read())
+        except urllib.error.HTTPError as e:
+            if e.code in (418, 429):
+                _ban["until"] = time.time() + min(int(e.headers.get("Retry-After") or 60), 3600) + 1
+                raise RuntimeError("Binance rate limit (HTTP %d); pausing %ds" % (e.code, _ban["until"] - time.time()))
+            if attempt == 2: raise
+            time.sleep(1 + attempt)
         except Exception:
             if attempt == 2: raise
             time.sleep(1 + attempt)
 
+BYBIT_IV = {"1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240", "1d": "D"}
+LAST_SRC = {}                    # market -> name of the source that served the latest request (shown in the health panel)
+
+
+def _bybit_klines(symbol, tf, limit):
+    d = _get("https://api.bybit.com/v5/market/kline?category=linear&symbol=%s&interval=%s&limit=%d" % (symbol, BYBIT_IV[tf], min(limit, 1000)))
+    if d.get("retCode") != 0:
+        raise RuntimeError("Bybit: %s" % d.get("retMsg"))
+    return sorted((int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])) for r in d["result"]["list"])
+
+
+def _futures_recent(symbol, tf, limit, end):
+    """Binance perps first; if Binance is down / banned / blocked, Bybit perps, then Binance spot (same price within a few bps)."""
+    errs = []
+    try:
+        rows = _binance("https://fapi.binance.com", "/fapi/v1/klines", symbol, tf, end - limit * TF_MS[tf], end, 1500)
+        LAST_SRC["futures"] = "Binance"
+        return rows
+    except Exception as e:
+        errs.append("Binance: %s" % str(e)[:60])
+    try:
+        rows = _bybit_klines(symbol, tf, limit)
+        LAST_SRC["futures"] = "Bybit (Binance unavailable)"
+        return rows
+    except Exception as e:
+        errs.append("Bybit: %s" % str(e)[:60])
+    try:
+        rows = _binance("https://data-api.binance.vision", "/api/v3/klines", symbol, tf, end - limit * TF_MS[tf], end, 1000)
+        LAST_SRC["futures"] = "Binance spot (futures feeds unavailable)"
+        return rows
+    except Exception as e:
+        errs.append("spot: %s" % str(e)[:60])
+    raise RuntimeError("no price feed reachable (" + "; ".join(errs) + ")")
+
+
 def _binance(base, path, symbol, tf, start_ms, end_ms, limit):
     out, t = [], start_ms
+    first = True
     while t < end_ms:
+        if not first:
+            _pace_wait()
+        first = False
         rows = _get("%s%s?symbol=%s&interval=%s&startTime=%d&limit=%d" % (base, path, symbol, tf, t, limit))
         if not rows: break
         out += [(r[0], float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])) for r in rows]
@@ -83,7 +143,7 @@ def fetch_recent(market, symbol, tf, limit=500, forming=False):
     if market == "crypto":
         rows = _binance("https://data-api.binance.vision", "/api/v3/klines", symbol, tf, end - limit * TF_MS[tf], end, 1000)
     elif market == "futures":
-        rows = _binance("https://fapi.binance.com", "/fapi/v1/klines", symbol, tf, end - limit * TF_MS[tf], end, 1500)
+        rows = _futures_recent(symbol, tf, limit, end)
     elif market in ("forex", "stock"):
         rows = _yahoo(symbol, tf, 1)
         if tf == "4h":
@@ -97,7 +157,19 @@ def fetch_recent(market, symbol, tf, limit=500, forming=False):
 
 def last_price(market, symbol):
     if market == "futures":
-        return float(_get("https://fapi.binance.com/fapi/v1/ticker/price?symbol=%s" % symbol)["price"])
+        try:
+            p = float(_get("https://fapi.binance.com/fapi/v1/ticker/price?symbol=%s" % symbol)["price"])
+            LAST_SRC["futures"] = "Binance"
+            return p
+        except Exception:
+            pass
+        try:
+            d = _get("https://api.bybit.com/v5/market/tickers?category=linear&symbol=%s" % symbol)
+            LAST_SRC["futures"] = "Bybit (Binance unavailable)"
+            return float(d["result"]["list"][0]["lastPrice"])
+        except Exception:
+            LAST_SRC["futures"] = "Binance spot (futures feeds unavailable)"
+            return float(_get("https://data-api.binance.vision/api/v3/ticker/price?symbol=%s" % symbol)["price"])
     if market == "crypto":
         return float(_get("https://data-api.binance.vision/api/v3/ticker/price?symbol=%s" % symbol)["price"])
     d = _get("https://query1.finance.yahoo.com/v8/finance/chart/%s?interval=1m&range=1d" % urllib.parse.quote(symbol))
