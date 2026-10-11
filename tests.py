@@ -466,6 +466,14 @@ class DayTrading(unittest.TestCase):
         self.e._day_one(self.inst, self.s.cfg["day"])                                      # same candle again: no second AI call
         self.assertEqual(len(self.llm.reqs), 1)
 
+    def test_day_trades_risk_less_than_the_validated_system(self):
+        self.s.save_cfg({"risk": {"per_trade_pct": 2.0}})
+        self.e._day_one(self.inst, self.s.cfg["day"])
+        pos = self.s.positions()[self.did]
+        eq = self.e.equity() - 0.0
+        self.assertLessEqual(pos["qty"] * pos["d"], 10000 * 0.0025 * 1.01)                          # capped at 0.25% even though the account setting is 2%
+        self.assertLess(pos["qty"] * pos["d"], 10000 * 0.02 * 0.2)
+
     def test_flat_low_confidence_and_no_ai_mean_no_trade(self):
         self.set_reply('{"action":"flat","conf":30,"stop_atr":1,"target_atr":2,"why":"chop"}')
         self.e._day_one(self.inst, self.s.cfg["day"])
@@ -1189,6 +1197,11 @@ class TrendMix(unittest.TestCase):
             self.assertTrue(all(i["strategy"] == "trendmix" and i["tf"] == "4h" for i in fut))
             self.assertEqual((srv.store.cfg["risk"]["per_trade_pct"], srv.store.cfg["risk"]["max_positions"]), (0.3, 15))
             self.assertEqual(srv.preset_action({"name": "nope"})[0], 400)
+            self.assertEqual(srv.preset_action({"name": "balanced"})[0], 200)
+            self.assertEqual((srv.store.cfg["risk"]["per_trade_pct"], srv.store.cfg["risk"]["max_drawdown_halt_pct"]), (0.5, 30.0))      # more risk comes with a halt that fits its dip
+            self.assertEqual(srv.preset_action({"name": "bold"})[0], 200)
+            self.assertEqual((srv.store.cfg["risk"]["per_trade_pct"], srv.store.cfg["risk"]["max_drawdown_halt_pct"]), (1.0, 50.0))
+            self.assertEqual(srv.preset_action({"name": "trendmix"})[0], 200)
             c = synth(900, seed=9, drift=0.001, vol=0.01)
             m = srv.run_any(c, "trendmix", self.cat.defaults_for("futures")[1], "futures", "4h", 0.003)
             self.assertIn("curve", m)
@@ -1698,7 +1711,28 @@ class SettingsGuard(unittest.TestCase):
         self.assertTrue(any("5m candles" in x for x in t))
         self.assertTrue(any("Risk per trade is 2.0%" in x for x in t))
         fix = [i["fix"] for i in health.checks(s, e) if "5m" in i["title"]][0]
-        self.assertIn("Trend mix", fix)                                                               # and it says exactly how to get back
+        self.assertIn("Balanced", fix)                                                                 # and it says exactly how to get back
+        self.assertIn("+7%", [i["detail"] for i in health.checks(s, e) if "Risk per trade" in i["title"]][0])    # the 2% warning quotes the evidence
+
+
+class ResizeToRisk(unittest.TestCase):
+    def test_lowering_risk_trims_oversized_trades_only(self):
+        s = mk_store(instruments=[dict(DEFAULTS["instruments"][0])], risk={"per_trade_pct": 2.0})
+        e = Engine(s, pricer=lambda m, sym: 100.0)
+        e._lot = lambda inst: None
+        inst = dict(s.cfg["instruments"][0], strategy="donchian", params={"trail": 0})
+        small = dict(s.cfg["instruments"][0], id="futures:ETHUSDT:4h", symbol="ETHUSDT", strategy="donchian", params={"trail": 0})
+        self.assertTrue(e.open(inst, 1, 100.0, 5.0)[0])                                 # 2% risk
+        s.save_cfg({"risk": {"per_trade_pct": 0.5}})
+        self.assertTrue(e.open(small, 1, 100.0, 5.0)[0])                                # already at 0.5%
+        eq0 = e.equity()
+        n = e.resize_to_risk()
+        self.assertEqual(n, 1)                                                           # only the oversized one is touched
+        big = s.positions()[inst["id"]]
+        self.assertAlmostEqual(big["qty"] * (big["d"] + 0.0016 * big["entry"]), eq0 * 0.005, delta=eq0 * 0.0002)
+        self.assertAlmostEqual(e.equity(), eq0, delta=eq0 * 0.0002)                      # trimming realizes only costs: the account is not hurt
+        self.assertEqual(s.trades(1)[0]["reason"], "resize")
+        self.assertEqual(e.resize_to_risk(), 0)                                          # idempotent
 
 
 if __name__ == "__main__":

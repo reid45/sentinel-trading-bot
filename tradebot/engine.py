@@ -519,7 +519,8 @@ class Engine:
             return self.s.think(inst, "skip", "Shorting isn't available for %s" % inst["symbol"])
         atr = daytrader.stats(hist)["atr"]
         price = c[4]
-        ok, msg = self.open(inst, side, price, dec["stop_atr"] * atr, source="day", tp=price + side * dec["target_atr"] * atr)
+        ok, msg = self.open(inst, side, price, dec["stop_atr"] * atr, source="day", tp=price + side * dec["target_atr"] * atr,
+                            risk_pct=min(self.s.cfg["risk"]["per_trade_pct"], d.get("risk_pct", 0.25)))
         if ok:
             self.day_stats["trades"] += 1
             self.s.event("trade", "DAY %s %s: %s" % (inst["symbol"], "LONG" if side == 1 else "SHORT", msg))
@@ -586,6 +587,33 @@ class Engine:
             except Exception:
                 c[inst["symbol"]] = None
         return c[inst["symbol"]]
+
+    def resize_to_risk(self, factor=1.5):
+        """Shrink open trades that are bigger than the current risk setting allows (for example after the risk level was lowered): the excess is closed at the
+        market price (costs and profit realized for that part) and the rest keeps its stop. Trades within `factor` x the budget are left alone. -> number resized."""
+        done = 0
+        with self.lock:
+            eq = self.equity()
+            budget = eq * self.s.cfg["risk"]["per_trade_pct"] / 100
+            for pid, pos in list(self.s.positions().items()):
+                if pos.get("source") in ("scalp", "smart", "day"):
+                    continue                                                  # those styles size themselves from their own risk settings
+                inst = self._inst_for(pid)
+                if not inst or budget <= 0:
+                    continue
+                mc = MARKET_COSTS[inst["market"]]
+                cur = pos["qty"] * (pos["d"] + 2 * (mc["fee"] + mc["slip"]) * pos["entry"])
+                if cur <= factor * budget:
+                    continue
+                keep = budget / cur
+                part = dict(pos, qty=pos["qty"] * (1 - keep), fee_in=pos.get("fee_in", 0.0) * (1 - keep), fund=pos.get("fund", 0.0) * (1 - keep))
+                rest = dict(pos, qty=pos["qty"] * keep, fee_in=pos.get("fee_in", 0.0) * keep, fund=pos.get("fund", 0.0) * keep)
+                self._close_locked(inst, part, pos.get("mark", pos["entry"]), "resize", exchange_side=True)
+                self.s.set_position(pid, rest)                                # _close_locked removed the whole position; put the remainder back
+                done += 1
+        if done:
+            self.s.event("info", "Risk setting lowered: %d open trade(s) were trimmed to fit it." % done)
+        return done
 
     def affordability(self):
         """Which crypto coins can this balance actually trade? Exchanges set a minimum order size per coin; at 0.3% risk a typical 4-hour stop (about 8% away)

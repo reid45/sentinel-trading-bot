@@ -255,9 +255,11 @@ def watchlist_action(b):
 
 
 PRESETS = {
-    "trendmix": dict(label="Trend mix (recommended)", risk=dict(per_trade_pct=0.3, max_positions=15, max_leverage_per_pos=3.0, max_total_leverage=3.0)),
-    "cautious": dict(label="Cautious", risk=dict(per_trade_pct=0.15, max_positions=10, max_leverage_per_pos=2.0, max_total_leverage=2.0)),
-    "bold": dict(label="Bold", risk=dict(per_trade_pct=0.5, max_positions=20, max_leverage_per_pos=3.0, max_total_leverage=3.0)),
+    # each preset pairs a risk per trade with a drawdown halt that fits its historical worst dip (see docs/STRATEGY_STUDY.md, "the risk dial")
+    "cautious": dict(label="Cautious 0.15%", risk=dict(per_trade_pct=0.15, max_positions=15, max_leverage_per_pos=3.0, max_total_leverage=3.0, max_drawdown_halt_pct=15.0)),
+    "trendmix": dict(label="Trend mix 0.3% (tested default)", risk=dict(per_trade_pct=0.3, max_positions=15, max_leverage_per_pos=3.0, max_total_leverage=3.0, max_drawdown_halt_pct=20.0)),
+    "balanced": dict(label="Balanced 0.5% (more profit, deeper dips)", risk=dict(per_trade_pct=0.5, max_positions=15, max_leverage_per_pos=3.0, max_total_leverage=3.0, max_drawdown_halt_pct=30.0)),
+    "bold": dict(label="Bold 1% (heavy dips)", risk=dict(per_trade_pct=1.0, max_positions=15, max_leverage_per_pos=3.0, max_total_leverage=3.0, max_drawdown_halt_pct=50.0)),
 }
 
 
@@ -635,6 +637,8 @@ class H(BaseHTTPRequestHandler):
                 engine.resume()
             elif a == "flatten":
                 engine.flatten_all("manual flatten")
+            elif a == "resize":
+                return 200, {"ok": True, "resized": engine.resize_to_risk()}
             elif a == "close":
                 engine.close_by_id(b["inst"], "manual")
             else:
@@ -653,7 +657,10 @@ class H(BaseHTTPRequestHandler):
                 engine._broker = None
             for inst in new.get("instruments", []):
                 inst["id"] = "%s:%s:%s" % (inst["market"], inst["symbol"], inst["tf"])
+            old_risk = store.cfg["risk"]["per_trade_pct"]
             store.save_cfg(new)
+            if "risk" in new and new["risk"].get("per_trade_pct", old_risk) < old_risk:
+                engine.resize_to_risk()                                       # lowering the risk also trims trades that are now too big
             return 200, {"ok": True}
         if path == "/api/account":
             print("[account] amount=%s from %s ua=%s referer=%s" % (b.get("amount"), self.client_address, (self.headers.get("User-Agent") or "")[:40], self.headers.get("Referer")), flush=True)

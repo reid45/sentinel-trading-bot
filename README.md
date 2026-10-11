@@ -3,7 +3,7 @@
 **An autonomous crypto and forex trading bot with a TradingView-style dashboard, sign-in for hosting on your own domain, a research-backed trend strategy, and a token-lean AI analyst.**
 Created by Reid. Pure Python standard library on the server, plain JavaScript in the browser: no dependencies to install, no build step, no paid services required.
 
-![Python](https://img.shields.io/badge/python-3.7%2B-blue) ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen) ![Tests](https://img.shields.io/badge/tests-97%20passing-brightgreen) ![License](https://img.shields.io/badge/license-MIT-lightgrey) ![Mode](https://img.shields.io/badge/default%20mode-paper%20trading-blueviolet)
+![Python](https://img.shields.io/badge/python-3.7%2B-blue) ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen) ![Tests](https://img.shields.io/badge/tests-99%20passing-brightgreen) ![License](https://img.shields.io/badge/license-MIT-lightgrey) ![Mode](https://img.shields.io/badge/default%20mode-paper%20trading-blueviolet)
 
 > **Disclaimer.** Sentinel is educational software, not financial advice. It starts in practice (paper) mode and has never been run against a real-money account. Past performance does not predict future results. You can lose money trading.
 
@@ -23,6 +23,7 @@ The first launch opens a **setup wizard** (practice balance, risk level, optiona
 - **Trend mix, the default strategy** ([evidence](docs/STRATEGY_STUDY.md)): four independent 4-hour trend systems run on **38 liquid crypto perps** (plus 3 forex pairs, and 7 big US stocks watch-only). Each system is its own *sleeve* with its own position and trailing stop, which tested clearly better than one blended signal. Add anything with the **+ button**: 190+ curated markets, every live Binance perpetual, and Yahoo search for any other ticker. **Star** favorites to pin them to the top.
 - **Choose a bot style** (Strategies page), each with its own switch, settings and live scorecard:
   **Trend following** (recommended, tested), **Smart-money day trader** (patient: checks liquidity, waits for a sweep, a high-volume displacement and a rejected pullback, reads big-player footprints, targets the next liquidity pool; crypto and US stocks) and a **Scalper** (high frequency, 1-minute candles, limit-order entries, editable fee tier, daily caps, auto-pause, and a break-even-fee readout). The last two are practice-mode experiments: **our back-tests lost money on both** (see below), so they come with honest evidence text instead of promises.
+- **Risk guidance backed by numbers**: the account chip and the Health chip quote the 3.4-year risk-dial study (0.5% risk +54% with a 27% dip; 2% only +7% with a 79% dip), and the Strategies page has Careful / Balanced / Bold presets that pair each risk level with a drawdown halt that fits it.
 - **Evidence first**: every claim in the product traces to a walk-forward study on real candles with fees, in [`research/`](research). Short-term strategies (15m to 1h, including ICT / Smart-Money patterns) **lost money after costs in every test**, so the fast AI day trader is off by default and labelled experimental.
 - **Trend scanner** (Trader page): live distance of every coin to its next breakout trigger, so a quiet stretch is explained instead of mysterious.
 - **AI day trader + chat** (experimental): a scanner flags setups on 15-minute candles; the AI sees each trigger's *measured track record on that coin* and can call evidence tools (liquidity levels, multi-timeframe trend, order-book and taker flow, trigger history) before deciding. Every step streams into **Live thoughts**; a read-only **chat** answers questions about the account and its own decisions.
@@ -114,7 +115,7 @@ flowchart LR
 | `research/` | - | The strategy studies and their results (reproducible) |
 | `deploy/`, `Dockerfile`, `docker-compose.yml` | - | Caddy, nginx, systemd and Docker files for hosting |
 | `sentinel.py` | 220 | Command line: control, `doctor`, `health`, `passwd`, `auth-off` |
-| `tests.py` | ~1,100 | 97 tests (see below) |
+| `tests.py` | ~1,100 | 99 tests (see below) |
 
 ## Trading logic (specification)
 
@@ -191,7 +192,7 @@ Design goals: *accurate inputs, minimal tokens, bounded spend, never in the crit
 
 ## Testing
 
-`python tests.py` runs **97 tests in about 55 s**, none of which can touch a real AI API or exchange (mock servers are used):
+`python tests.py` runs **99 tests in about 65 s**, none of which can touch a real AI API or exchange (mock servers are used):
 
 scalper (limit fills only when traded through, maker vs taker costs, stops, time exit, daily cap, auto-pause) · smart-money playbook (never enters early, structure stop, 2R-4R target, liquidity gate, DST-aware market hours, stock opening range) · style API · entry fee charged once · indicators and backtester sanity (costs hurt, stops bound losses) · live-engine replay equals backtester · shared-account portfolio simulator respects max open trades · trend-mix sleeves open/close independently · accounting reconciliation to the cent · risk limits, kill switch, daily-loss and drawdown guards · entry rules (hours, direction, caps, cool-down, stop-out pause) · tiny-account lot-size rules · dead-contract guard · data fallback and ban protection · alerts (payloads, delivery, event routing) · AI evidence tools (causal triggers, costs charged) · webhook auth · Bybit adapter against a signature-verifying mock exchange · AI analyst: prompt-prefix stability, cost math, tool round-trip, budgets, circuit breaker, fail-open, scorecard · accounts, lockout, idle expiry · the full HTTP login flow (first-run code, cookies, CSRF, roles, host checks) · API security (secrets never leave, forwarded requests rejected, traversal blocked) · cache headers · first-run flags.
 

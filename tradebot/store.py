@@ -28,7 +28,7 @@ DEFAULTS = {
     "ui": {"onboarded": False, "tour_done": False, "brand": "Sentinel", "theme": "dark", "accent": "#7c9cff", "density": "comfortable", "font": 100, "radius": 16,
            "palette": "classic", "motion": True, "landing": "portfolio", "clock": "24", "currency": "USD",
            "home": {"insight": True, "kpis": True, "safety": True, "open": True, "markets": True}},
-    "day": {"enabled": False, "tf": "15m", "markets": 8, "min_conf": 50, "max_hold_bars": 12},
+    "day": {"enabled": False, "tf": "15m", "markets": 8, "min_conf": 50, "max_hold_bars": 12, "risk_pct": 0.25},
     "scalp": {"enabled": False, "markets": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"], "maker_bps": 2.0, "taker_bps": 5.0, "slip_bps": 1.0,
               "k": 2.0, "rsi": 20, "off": 0.3, "wait": 3, "tgt": 0.6, "stop": 2.0, "hold": 10,
               "risk_pct": 0.1, "max_trades_day": 300, "daily_loss_pct": 1.0, "auto_pause": True, "auto_pause_trades": 40},

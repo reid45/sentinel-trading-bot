@@ -90,6 +90,30 @@ Same four windows, same 38 coins (`research/risk_study.py`). A rule is only wort
 
 Caps trade profit for protection only in the bad window; the Bitcoin-regime filter is clearly harmful (it blocks the early moves trend-following lives on). The default stays.
 
+## The risk dial: more risk is not more profit
+
+The same 38-coin trend mix on one shared account, 3.4 years of real candles, live-engine limits (3x leverage cap, 15 open trades), only the risk per trade changes
+(`research/risk_level_study.py`):
+
+| Risk per trade | Total return (3.4 yr) | Worst dip | 0-30% | 30-60% | 60-100% | Last 50 days |
+|---------------:|----------------------:|----------:|------:|-------:|--------:|-------------:|
+| 0.30% | +34% | 17% | +8.5% | +6.3% | +13.8% | -12.6% |
+| **0.50%** | **+54%** | **27%** | +13.1% | +9.3% | +21.1% | -20.2% |
+| 0.75% | +75% | 39% | +17.6% | +11.5% | +27.6% | -28.9% |
+| 1.00% | +88% | 49% | +20.5% | +12.0% | +31.0% | -36.8% |
+| 1.50% | +75% | 65% | +23.0% | +6.2% | +21.5% | -50.5% |
+| **2.00%** | **+7%** | **79%** | -5.6% | -27.7% | +4.2% | -49.7% |
+
+* From 0.3% to 1% profit and drawdown rise together (return per unit of dip stays near 2x). Past 1% the extra risk buys **less** profit: bigger positions hit the leverage cap, so
+  trades are skipped, and the dips are deep enough to wipe out the gains. At 2% the whole 3.4 years made +7% with a 79% drawdown.
+* The presets pair each risk level with a drawdown halt that fits its historical worst dip: Careful 0.15% (halt 15%), tested default 0.3% (20%), **Balanced 0.5% (30%)**, Bold 1% (50%).
+  A halt tighter than the strategy's normal dip would stop the bot right before the recoveries it earns its money on.
+* Experimental styles (AI day trader, scalper, smart-money) risk less than the validated system by default (0.25%, 0.1%, 0.5%).
+
+**Slower is not better either.** Textbook daily-candle versions of the same ideas (Donchian 20 with a 100-day filter, Donchian 55, EMA 20/100) on the same coins and account made
+**+3% in 3.4 years** at 0.5% risk (4 trades a week, 26% drawdown), against **+54%** for the 4-hour mix (`research/daily_study.py`). 4-hour candles remain the sweet spot between
+too many fees and too little information.
+
 ## Result 4: the two "fast" and "patient" styles, tested honestly
 
 You asked for a high-frequency scalper and a patient day trader that follows the big players. Both were built, and both were tested first:
@@ -139,5 +163,7 @@ python research/footprint_study.py          # big-player positioning vs next-hou
 python research/playbook_study.py           # the smart-money confirmation sequence on crypto
 python research/brake_study.py              # drawdown brake variants (rejected)
 python research/risk_study.py               # per-coin / same-direction caps and a BTC regime filter (rejected)
+python research/risk_level_study.py         # the risk dial: 0.3% to 2% per trade
+python research/daily_study.py              # daily candles vs 4-hour (daily is much worse)
 python research/engine_replay.py 300        # the live engine vs the backtester on the last 300 bars
 ```

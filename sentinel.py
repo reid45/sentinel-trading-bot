@@ -217,7 +217,12 @@ def main(a):
                 print(node[keys[-1]])
             else:
                 old = node[keys[-1]]
-                val = type(old)(rest[1]) if not isinstance(old, bool) else rest[1].lower() in ("1", "true", "yes")
+                if isinstance(old, bool):
+                    val = rest[1].lower() in ("1", "true", "yes")
+                elif isinstance(old, (int, float)):
+                    val = float(rest[1]) if ("." in rest[1] or isinstance(old, float)) else int(rest[1])         # 2 -> 0.5 must work
+                else:
+                    val = type(old)(rest[1])
                 patch = cur = {}
                 for k in keys[:-1]:
                     cur[k] = {}

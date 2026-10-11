@@ -360,7 +360,7 @@ function fillSettings(force) {
 }
 
 /* ---------- account sheet */
-const PRESETS = [100, 250, 500, 1000, 2500, 5000, 10000, 25000], RISKS = [[0.25, "Careful"], [0.5, "Balanced"], [1, "Bold"], [2, "Max"]]; let acctRisk = 0.5;
+const PRESETS = [100, 250, 500, 1000, 2500, 5000, 10000, 25000], RISKS = [[0.3, "Careful"], [0.5, "Balanced"], [1, "Bold"], [2, "Too much"]]; let acctRisk = 0.5;
 function openAcct(trigger) {
   const e = S.engine, live = e.mode === "live"; acctRisk = S.cfg.risk.per_trade_pct;
   const sh = openSheet(`<h2 style="margin:0 0 4px;font-size:18px">Account size and risk</h2><p class="note" style="margin-top:0">${live ? "In Exchange mode the balance is whatever is in your exchange account." : "Choose how much paper money to start with."}</p>
@@ -369,7 +369,9 @@ function openAcct(trigger) {
    <div class="note" id="aPrev" style="margin-top:14px"></div>${live ? "" : '<div class="callout" style="margin-top:12px">A new balance starts a <b>fresh paper account</b>; old paper trades are cleared.</div>'}
    <div class="row" style="margin-top:18px;justify-content:flex-end"><button class="btn" id="aCn">Cancel</button><button class="btn pri" id="aOk">Apply</button></div>`, trigger);
   const prev = () => { const a = +$("#aAmt").value || 0, r = S.cfg.risk; $$("#aChips button").forEach(b => b.classList.toggle("on", +b.dataset.v === a)); $$("#aRisk button").forEach(b => b.classList.toggle("on", +b.dataset.r === acctRisk));
-    $("#aPrev").innerHTML = `With <b>${money(a, 0)}</b>, one losing trade costs at most about <b>${money(a * acctRisk / 100)}</b>. Trading pauses for the day after a <b>${money(a * r.daily_loss_limit_pct / 100)}</b> loss and halts after a <b>${money(a * r.max_drawdown_halt_pct / 100)}</b> drawdown.` + (a < 500 && !live ? `<br><span class="warn">Small accounts can't trade every market: exchanges have minimum order sizes. The activity log says when a trade is too small.</span>` : ""); };
+    const NOTE = { 0.3: "Back-test: +34% over 3.4 years, worst dip 17%. The tested default.", 0.5: "Back-test: +54%, worst dip 27%. Best balance of profit and pain.", 1: "Back-test: +88%, worst dip <b>49%</b>. Heavy swings.", 2: "Back-test: only +7% with a <b>79%</b> dip. Not recommended: bigger bets made <b>less</b> money." };
+    const rn = NOTE[acctRisk] ? `<div class="callout" style="margin:0 0 10px;${acctRisk >= 2 ? "border-color:var(--down)" : ""}"><b>${acctRisk}% per trade.</b> ${NOTE[acctRisk]}</div>` : "";
+    $("#aPrev").innerHTML = rn + `With <b>${money(a, 0)}</b>, one losing trade costs at most about <b>${money(a * acctRisk / 100)}</b>. Trading pauses for the day after a <b>${money(a * r.daily_loss_limit_pct / 100)}</b> loss and halts after a <b>${money(a * r.max_drawdown_halt_pct / 100)}</b> drawdown.` + (a < 500 && !live ? `<br><span class="warn">Small accounts can't trade every market: exchanges have minimum order sizes. The activity log says when a trade is too small.</span>` : ""); };
   $("#aChips", sh).onclick = e => { const b = e.target.closest("button"); if (b && !b.disabled) { $("#aAmt").value = b.dataset.v; prev(); } }; $("#aRisk", sh).onclick = e => { const b = e.target.closest("button"); if (b) { acctRisk = +b.dataset.r; prev(); } }; $("#aAmt", sh).oninput = prev; prev();
   $("#aCn", sh).onclick = closeSheet;
   $("#aOk", sh).onclick = guard(async () => { if (acctRisk !== S.cfg.risk.per_trade_pct) await api("/api/config", { risk: { per_trade_pct: acctRisk } }); if (!live && +$("#aAmt").value !== S.engine.start_equity) await api("/api/account", { amount: +$("#aAmt").value }); closeSheet(); toast("Account updated", "info", "Ready"); await refresh(); });

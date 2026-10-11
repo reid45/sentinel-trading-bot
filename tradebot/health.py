@@ -71,13 +71,13 @@ def checks(store, engine, deploy=None):
     if fast:
         out.append(_c("warn", "The swing bot is running on %s candles" % "/".join(fast),
                       "In our tests every strategy lost money after fees at this speed; only 4-hour candles were profitable. Faster means more trades and more fees, not more profit.",
-                      "Strategies page, Trend mix preset: it restores 4-hour candles and the tested 0.3% risk (open swing trades are closed first)."))
+                      "Strategies page, Balanced or Careful preset: it restores 4-hour candles and a tested risk level (open swing trades are closed first)."))
     rk = cfg["risk"]["per_trade_pct"]
     if rk >= 1.0:
         out.append(_c("warn", "Risk per trade is %.1f%%" % rk,
-                      "The tested setup risks 0.3%%. With up to %d open trades, a run of stop-outs could cost about %.0f%% of the account before the daily-loss limit (%.0f%%) stops new trades." % (
-                          cfg["risk"]["max_positions"], min(cfg["risk"]["max_positions"] * rk, 100), cfg["risk"]["daily_loss_limit_pct"]),
-                      "Account chip at the top, choose Careful or Balanced, or apply the Trend mix preset."))
+                      "Back-test of this exact system over 3.4 years: 0.5%% risk made +54%% with a worst dip of 27%%; 1%% made +88%% with a 49%% dip; 2%% made only +7%% with a 79%% dip "
+                      "(the leverage cap starts skipping trades and the dips swallow the gains). More risk is not more profit.",
+                      "Account chip at the top: Balanced (0.5%) is the best trade-off, or apply a preset on the Strategies page."))
 
     # --- rules and activity
     if cfg["rules"]["hours"]["enabled"]:
