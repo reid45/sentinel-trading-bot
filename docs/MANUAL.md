@@ -83,7 +83,7 @@ The AI connection page (also reachable from the **AI chip** in the top bar). See
 Quick start, how the bot works, a glossary, troubleshooting, and the tour.
 
 ### Settings
-Mode (practice or exchange), account size, safety limits, exchange connection, and the Pro-mode switch.
+One screen: a risk slider and the timeframe on the left; Look, Alerts, Access and More tabs on the right (see section 15).
 
 ### Simple mode and Pro mode
 Sentinel starts in **Simple mode**, which shows only what a beginner needs. Switch on **Pro mode** (Settings → *Pro mode*, or `Ctrl+K` → *Switch to Pro mode*) to add the **Lab**, strategy names and parameters, extra table columns, drawdown and profit-factor statistics, the AI scorecard, and the markets table.
@@ -144,11 +144,11 @@ When the bot spots a trade that has already passed every safety check, the AI he
 | Protection | What it does | Default |
 |---|---|---|
 | **Safety stop** | Every trade has one; closes the trade if price moves against it. | always on |
-| **Risk per trade** | Caps the loss of a single trade. | 0.5% of account |
-| **Max open trades** | Never more than this many at once. | 6 |
+| **Risk per trade** | Caps the loss of a single trade. One slider in Settings; it also sets the two limits below to match. | 0.5% of account |
+| **Max open trades** | Never more than this many at once. | 15 |
 | **Leverage cap** | Limits borrowed exposure per trade and in total. | 3× |
-| **Daily loss limit** | After this loss in one UTC day, no new trades until tomorrow. | 3% |
-| **Emergency brake** | If the account falls this far below its peak, everything is closed and the bot halts. | 20% |
+| **Daily loss limit** | After this loss in one UTC day, no new trades until tomorrow. Follows the risk slider (about 6 trades' worth). | 3% at 0.5% risk |
+| **Emergency brake** | If the account falls this far below its peak, everything is closed and the bot halts. Follows the risk slider. | 30% at 0.5% risk |
 | **Kill switch** | The red power button: close everything and halt now. | manual |
 | **AI budget** | Hard daily and lifetime AI spending caps; AI failures never block trading. | see §7 |
 
@@ -208,7 +208,7 @@ Open **Strategies** in the left bar. There are three styles, each with an on/off
 
 ## 15. Make it yours (Settings)
 
-Open **Settings** and scroll to the cards below. Changes apply immediately.
+Settings fits on one screen. On the left are the two things that matter: the **risk slider** (how much you lose if a trade fails; it also sets the daily-loss limit and emergency brake to match, and shows the back-test result for the nearest tested level) and the **timeframe** (how often the bot looks for trades; 4 hours is the tested one). On the right, tabs keep the rest out of the way: **Look**, **Alerts**, **Access** (sign-in, passwords, people) and **More** (mode, exchange link, optional trading rules, Pro-mode extras). Changes apply immediately.
 
 - **Appearance**: Dark, Light or Auto theme; accent colour; price colours (including a colour-blind-safe pair); compact layout; text size; corner roundness; animations on/off; currency symbol; 12/24-hour clock; which page opens first; the **app name** shown in the tab and on the sign-in page; and which Home sections are visible.
 - **Trading rules**: only trade at certain UTC hours and weekdays; long-only or short-only; a daily trade limit; a cool-down after closing a coin; a pause after a run of stop-outs; a cap on total day-trade risk. When a rule blocks a trade the Trader page says exactly why.

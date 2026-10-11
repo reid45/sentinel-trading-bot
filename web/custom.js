@@ -81,7 +81,7 @@ const CUST = (() => {
     c.addEventListener("click", () => setTimeout(() => {
       const o = $("#cuOut"), s = $("#cuSec");
       if (o) o.onclick = guard(async () => { await api("/api/auth/logout", {}, true); location.href = "/login"; });
-      if (s) s.onclick = () => { closeSheet(); go("settings"); setTimeout(() => { const t = $("#cardSecurity"); t && t.scrollIntoView({ behavior: "smooth", block: "start" }); }, 350); };
+      if (s) s.onclick = () => { closeSheet(); go("settings"); setTimeout(() => setTab("access"), 350); };
     }, 30));
   }
 
@@ -94,82 +94,83 @@ const CUST = (() => {
     if (!landed) { landed = true; if (ui.landing && ui.landing !== "portfolio" && typeof go === "function" && PAGES.some(p => p[0] === ui.landing)) go(ui.landing); }
   }
 
-  /* ------------------------------------------------------------ settings cards */
-  const row = (title, sub, ctl) => `<div class="kv"><div><b>${title}</b><span class="sub">${sub || ""}</span></div>${ctl}</div>`;
+  /* ------------------------------------------------------------ settings panes (compact: they live in the side panel on the Settings page) */
   const sw = (id, on) => `<label class="sw"><input type="checkbox" id="${id}"${on ? " checked" : ""}><span></span></label>`;
   const opts = (list, cur) => list.map(([v, t]) => `<option value="${v}"${String(v) === String(cur) ? " selected" : ""}>${t}</option>`).join("");
   const hours = Array.from({ length: 25 }, (_, i) => [i, String(i).padStart(2, "0") + ":00 UTC"]);
+  const fld = (label, ctl, wide) => `<div class="fld${wide ? " wide" : ""}"><label class="f">${label}</label>${ctl}</div>`;
 
-  function appearanceCard() {
-    return `<div class="card" style="--i:5"><h3>Appearance <span class="sub">changes apply instantly</span></h3>
-     ${row("Theme", "Dark, light, or follow your device", `<div class="seg" id="cuTheme"><div class="thumb"></div><button data-v="dark">Dark</button><button data-v="light">Light</button><button data-v="auto">Auto</button></div>`)}
-     <div style="padding:10px 0;border-bottom:1px solid var(--line)"><b style="font-weight:550">Accent colour</b><div class="swatches" id="cuAcc">${ACCENTS.map(c => `<span class="swatch${c === ui.accent ? " on" : ""}" data-c="${c}" style="background:${c}" role="button" aria-label="${c}"></span>`).join("")}<input type="color" id="cuAccPick" value="${ui.accent}" aria-label="Custom colour"></div></div>
-     ${row("Price colours", "Up and down colours on charts and numbers", `<select id="cuPal">${opts(Object.entries(PALETTES).map(([k, v]) => [k, v[2]]), ui.palette)}</select>`)}
-     ${row("Layout density", "Compact fits more on screen", `<div class="seg" id="cuDen"><div class="thumb"></div><button data-v="comfortable">Comfortable</button><button data-v="compact">Compact</button></div>`)}
-     ${row("Text size", "<span id=\"cuFontV\">" + ui.font + "%</span>", `<input type="range" id="cuFont" min="90" max="115" step="5" value="${ui.font}">`)}
-     ${row("Corner roundness", "<span id=\"cuRadV\">" + ui.radius + " px</span>", `<input type="range" id="cuRad" min="6" max="24" step="2" value="${ui.radius}">`)}
-     ${row("Animations", "Turn off for a calmer, faster feel", sw("cuMotion", ui.motion))}
-     ${row("Currency symbol", "Display only; the account is simulated", `<select id="cuCur">${opts(Object.keys(CURR).map(k => [k, k + " (" + CURR[k].trim() + ")"]), ui.currency)}</select>`)}
-     ${row("Clock", "", `<select id="cuClock">${opts([["24", "24-hour"], ["12", "12-hour"]], ui.clock)}</select>`)}
-     ${row("Open on", "The page you land on after signing in", `<select id="cuLand">${opts(PAGES.filter(p => p[0] !== "lab").map(p => [p[0], p[2]]), ui.landing)}</select>`)}
-     ${row("App name", "Shown in the browser tab and sign-in page", `<input id="cuBrand" maxlength="24" value="${esc(ui.brand)}" style="max-width:170px">`)}
-     <div style="padding-top:10px"><b style="font-weight:550">Home page sections</b><div class="row" style="flex-wrap:wrap;gap:14px;margin-top:8px">${[["insight", "Insight"], ["kpis", "Key numbers"], ["safety", "Safety meters"], ["open", "Open trades"], ["markets", "My markets"]].map(([k, t]) => `<label class="row" style="gap:7px;font-size:12.5px;cursor:pointer"><input type="checkbox" data-home="${k}"${ui.home[k] ? " checked" : ""}> ${t}</label>`).join("")}</div></div></div>`;
+  function appearancePane() {
+    return `<div class="cg">
+     ${fld("Theme", `<div class="seg" id="cuTheme"><div class="thumb"></div><button data-v="dark">Dark</button><button data-v="light">Light</button><button data-v="auto">Auto</button></div>`)}
+     ${fld("Layout", `<div class="seg" id="cuDen"><div class="thumb"></div><button data-v="comfortable">Roomy</button><button data-v="compact">Compact</button></div>`)}
+     ${fld("Accent colour", `<div class="swatches" id="cuAcc">${ACCENTS.map(c => `<span class="swatch${c === ui.accent ? " on" : ""}" data-c="${c}" style="background:${c}" role="button" aria-label="${c}"></span>`).join("")}<input type="color" id="cuAccPick" value="${ui.accent}" aria-label="Custom colour"></div>`, true)}
+     ${fld("Price colours", `<select id="cuPal">${opts(Object.entries(PALETTES).map(([k, v]) => [k, v[2]]), ui.palette)}</select>`)}
+     ${fld("Currency", `<select id="cuCur">${opts(Object.keys(CURR).map(k => [k, k + " (" + CURR[k].trim() + ")"]), ui.currency)}</select>`)}
+     ${fld(`Text size <span id="cuFontV">${ui.font}%</span>`, `<input type="range" id="cuFont" min="90" max="115" step="5" value="${ui.font}">`)}
+     ${fld(`Corners <span id="cuRadV">${ui.radius}px</span>`, `<input type="range" id="cuRad" min="6" max="24" step="2" value="${ui.radius}">`)}
+     ${fld("Clock", `<select id="cuClock">${opts([["24", "24-hour"], ["12", "12-hour"]], ui.clock)}</select>`)}
+     ${fld("Open on", `<select id="cuLand">${opts(PAGES.filter(p => p[0] !== "lab").map(p => [p[0], p[2]]), ui.landing)}</select>`)}
+     ${fld("App name", `<input id="cuBrand" maxlength="24" value="${esc(ui.brand)}">`)}
+     ${fld("Animations", sw("cuMotion", ui.motion))}
+     ${fld("Home page shows", `<div class="row" style="gap:6px 12px">${[["insight", "Insight"], ["kpis", "Numbers"], ["safety", "Safety"], ["open", "Trades"], ["markets", "Markets"]].map(([k, t]) => `<label class="row" style="gap:5px;font-size:12px;cursor:pointer"><input type="checkbox" data-home="${k}"${ui.home[k] ? " checked" : ""}>${t}</label>`).join("")}</div>`, true)}</div>`;
   }
 
-  function rulesCard() {
-    const r = S.cfg.rules, h = r.hours;
-    const dn = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-    return `<div class="card" style="--i:6"><h3>Trading rules <span class="sub">checked before every new trade</span></h3>
-     ${row("Only trade at set hours", "UTC clock. Overnight windows work (22 to 06)", sw("ruHrs", h.enabled))}
-     <div class="row" id="ruHrsBox" style="gap:10px;padding:8px 0 4px;flex-wrap:wrap"><select id="ruFrom">${opts(hours.slice(0, 24), h.start)}</select><span class="sub">to</span><select id="ruTo">${opts(hours, h.end)}</select>
-       <div class="days" id="ruDays">${dn.map((d, i) => `<label><input type="checkbox" value="${i}"${(h.days || []).includes(i) ? " checked" : ""}>${d}</label>`).join("")}</div></div>
-     ${row("Allowed direction", "Longs only is simplest for stocks", `<select id="ruDir">${opts([["both", "Long and short"], ["long", "Long only"], ["short", "Short only"]], r.direction)}</select>`)}
-     ${row("Max new trades per day", "0 means no limit", `<input id="ruMax" type="number" min="0" step="1" value="${r.max_trades_day}" style="max-width:90px">`)}
-     ${row("Cool-down per market", "Minutes to wait after closing a market before re-entering", `<input id="ruCool" type="number" min="0" step="5" value="${r.cooldown_min}" style="max-width:90px">`)}
-     ${row("Pause after stop-outs", "If this many stops hit within an hour, pause new trades (0 = off)", `<input id="ruStops" type="number" min="0" step="1" value="${r.pause_after_stops}" style="max-width:90px">`)}
-     ${row("Pause length", "Minutes", `<input id="ruPause" type="number" min="5" step="5" value="${r.pause_minutes}" style="max-width:90px">`)}
-     ${row("Max money at risk, day trades", "Total of all open stop distances, % of account", `<input id="ruRisk" type="number" min="0" step="0.5" value="${r.max_open_risk_pct}" style="max-width:90px">`)}
-     <div class="row" style="margin-top:14px"><button class="btn pri" id="ruSave">Save rules</button><span class="sub" id="ruOut"></span></div></div>`;
+  function rulesPane() {
+    const r = S.cfg.rules, h = r.hours, dn = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], num = (id, v, step) => `<input id="${id}" type="number" min="0" step="${step}" value="${v}">`;
+    return `<div class="cg">
+     ${fld("Only trade at set hours (UTC)", sw("ruHrs", h.enabled), true)}
+     <div class="fld wide" id="ruHrsBox"><div class="row" style="gap:8px"><select id="ruFrom" style="width:auto">${opts(hours.slice(0, 24), h.start)}</select><span class="sub">to</span><select id="ruTo" style="width:auto">${opts(hours, h.end)}</select></div>
+       <div class="days" id="ruDays" style="margin-top:8px">${dn.map((d, i) => `<label><input type="checkbox" value="${i}"${(h.days || []).includes(i) ? " checked" : ""}>${d}</label>`).join("")}</div></div>
+     ${fld("Direction", `<select id="ruDir">${opts([["both", "Long and short"], ["long", "Long only"], ["short", "Short only"]], r.direction)}</select>`)}
+     ${fld("New trades a day (0 = no limit)", num("ruMax", r.max_trades_day, 1))}
+     ${fld("Cool-down per market (min)", num("ruCool", r.cooldown_min, 5))}
+     ${fld("Pause after this many stop-outs an hour (0 = off)", num("ruStops", r.pause_after_stops, 1))}
+     ${fld("Pause length (min)", num("ruPause", r.pause_minutes, 5))}
+     ${fld("Max day-trade risk (% of account)", num("ruRisk", r.max_open_risk_pct, 0.5))}</div>
+     <div class="row" style="margin-top:10px"><button class="btn pri sm" id="ruSave">Save rules</button><span class="sub" id="ruOut"></span></div>`;
   }
 
-  function notifyCard() {
+  function notifyPane() {
     const n = S.cfg.notify;
-    return `<div class="card" style="--i:7"><h3>Alerts <span class="sub">phone or desktop notifications</span></h3>
-     <p class="note" style="margin-top:0">Get a message when a trade opens or closes or something needs attention. Works with Discord, Slack, Telegram or any webhook.</p>
-     <div class="form"><div><label class="f">Service</label><select id="nfKind">${opts([["discord", "Discord"], ["slack", "Slack"], ["telegram", "Telegram"], ["generic", "Other (JSON webhook)"]], n.kind)}</select></div>
-      <div id="nfUrlBox"><label class="f">Webhook URL ${n.has_url ? '<span class="up">saved</span>' : ""}</label><input id="nfUrl" type="password" placeholder="${n.has_url ? "leave blank to keep the saved one" : "https://..."}" autocomplete="off"></div>
-      <div id="nfTgBox" style="display:none"><label class="f">Bot token ${n.has_telegram_token ? '<span class="up">saved</span>' : ""}</label><input id="nfTok" type="password" placeholder="${n.has_telegram_token ? "leave blank to keep" : "123456:ABC..."}" autocomplete="off"></div>
-      <div id="nfChatBox" style="display:none"><label class="f">Chat ID</label><input id="nfChat" value="${esc(n.telegram_chat)}"></div></div>
-     <div class="row" style="gap:18px;margin-top:12px;flex-wrap:wrap">${[["nfOpen", "Trade opened", n.on_open], ["nfClose", "Trade closed", n.on_close], ["nfAlert", "Alerts and errors", n.on_alert]].map(([id, t, on]) => `<label class="row" style="gap:7px;font-size:12.5px;cursor:pointer"><input type="checkbox" id="${id}"${on ? " checked" : ""}> ${t}</label>`).join("")}</div>
-     <div class="row" style="margin-top:14px"><button class="btn pri" id="nfSave">Save</button><button class="btn" id="nfTest">Send a test</button><span class="sub" id="nfOut"></span></div></div>`;
+    return `<p class="sub" style="margin:0 0 10px">Get a phone or desktop message when a trade opens or closes or something needs attention.</p><div class="cg">
+      ${fld("Service", `<select id="nfKind">${opts([["discord", "Discord"], ["slack", "Slack"], ["telegram", "Telegram"], ["generic", "Other (JSON webhook)"]], n.kind)}</select>`)}
+      <div class="fld" id="nfUrlBox"><label class="f">Webhook URL ${n.has_url ? '<span class="up">saved</span>' : ""}</label><input id="nfUrl" type="password" placeholder="${n.has_url ? "leave blank to keep" : "https://..."}" autocomplete="off"></div>
+      <div class="fld" id="nfTgBox" style="display:none"><label class="f">Bot token ${n.has_telegram_token ? '<span class="up">saved</span>' : ""}</label><input id="nfTok" type="password" placeholder="${n.has_telegram_token ? "leave blank to keep" : "123456:ABC..."}" autocomplete="off"></div>
+      <div class="fld" id="nfChatBox" style="display:none"><label class="f">Chat ID</label><input id="nfChat" value="${esc(n.telegram_chat)}"></div></div>
+     <div class="row" style="gap:6px 16px;margin-top:12px">${[["nfOpen", "Trade opened", n.on_open], ["nfClose", "Trade closed", n.on_close], ["nfAlert", "Alerts and errors", n.on_alert]].map(([id, t, on]) => `<label class="row" style="gap:6px;font-size:12.5px;cursor:pointer"><input type="checkbox" id="${id}"${on ? " checked" : ""}> ${t}</label>`).join("")}</div>
+     <div class="row" style="margin-top:12px"><button class="btn pri sm" id="nfSave">Save</button><button class="btn sm" id="nfTest">Send a test</button><span class="sub" id="nfOut"></span></div>`;
   }
 
-  async function securityCard() {
-    if (me.role !== "owner" && !me.auth) return "";
+  async function securityPane() {
     if (!me.auth) {
-      return `<div class="card" id="cardSecurity" style="--i:8"><h3>Sign-in <span class="sub">protect the dashboard</span></h3>
-       <p class="note" style="margin-top:0">Right now anyone using this computer can open Sentinel. Turn on sign-in to require a username and password. Required if you put it on the internet.</p>
-       <div class="form"><div><label class="f">Username</label><input id="seUser" autocomplete="username" placeholder="owner"></div><div><label class="f">Password (10+ characters)</label><input id="sePw" type="password" autocomplete="new-password"></div><div><label class="f">Repeat password</label><input id="sePw2" type="password" autocomplete="new-password"></div></div>
-       <div class="row" style="margin-top:14px"><button class="btn pri" id="seOn">Turn on sign-in</button><span class="sub" id="seOut"></span></div></div>`;
+      if (me.role !== "owner") return "";
+      return `<p class="sub" style="margin:0 0 10px">Right now anyone using this computer can open Sentinel. Turn on sign-in to require a username and password. Required if you put it on the internet.</p>
+       <div class="cg"><div class="fld"><label class="f">Username</label><input id="seUser" autocomplete="username" placeholder="owner"></div><div class="fld"><label class="f">Password (10+ characters)</label><input id="sePw" type="password" autocomplete="new-password"></div><div class="fld"><label class="f">Repeat password</label><input id="sePw2" type="password" autocomplete="new-password"></div></div>
+       <div class="row" style="margin-top:12px"><button class="btn pri sm" id="seOn">Turn on sign-in</button><span class="sub" id="seOut"></span></div>`;
     }
     let list = "";
     if (me.role === "owner") {
       try { const u = await api("/api/auth/users", undefined, true); list = `<table class="ulist" id="seUsers">${u.users.map(x => `<tr><td><b>${esc(x.name)}</b> <span class="kbadge ${x.role}">${x.role === "owner" ? "Owner" : "View only"}</span><span class="sub">${x.last_login ? "last sign-in " + new Date(x.last_login * 1000).toLocaleString() : "never signed in"}</span></td><td style="text-align:right">${x.name === me.user ? '<span class="sub">you</span>' : `<button class="btn sm" data-reset="${esc(x.name)}">New password</button> <button class="btn sm danger" data-del="${esc(x.name)}">Remove</button>`}</td></tr>`).join("")}</table>`; } catch (e) { }
     }
-    return `<div class="card" id="cardSecurity" style="--i:8"><h3>Sign-in and accounts</h3>
-      <div class="kv"><div><b>Signed in as ${esc(me.user)}</b><span class="sub">${me.role === "owner" ? "Owner: full control" : "View only"}</span></div><div class="row"><button class="btn sm" id="seOthers">Sign out other devices</button><button class="btn sm danger" id="seOut2">Sign out</button></div></div>
-      <div class="form" style="margin-top:12px"><div><label class="f">Current password</label><input id="seOld" type="password" autocomplete="current-password"></div><div><label class="f">New password</label><input id="seNew" type="password" autocomplete="new-password"></div><div style="align-self:end"><button class="btn" id="sePwBtn">Change password</button></div></div>
-      ${me.role === "owner" ? `<h3 style="margin-top:22px;font-size:13px">People who can sign in</h3>${list}
-       <div class="form" style="margin-top:10px"><div><label class="f">Username</label><input id="nuName" autocomplete="off"></div><div><label class="f">Password</label><input id="nuPw" type="password" autocomplete="new-password"></div><div><label class="f">Access</label><select id="nuRole"><option value="viewer">View only</option><option value="owner">Owner</option></select></div><div style="align-self:end"><button class="btn" id="nuAdd">Add person</button></div></div>` : ""}
-      <span class="sub" id="seMsg"></span></div>`;
+    return `<div class="kv"><div><b>Signed in as ${esc(me.user)}</b><span class="sub">${me.role === "owner" ? "Owner: full control" : "View only"}</span></div><div class="row"><button class="btn sm" id="seOthers">Sign out other devices</button><button class="btn sm danger" id="seOut2">Sign out</button></div></div>
+      <details><summary>Change password</summary><div class="cg"><div class="fld"><label class="f">Current password</label><input id="seOld" type="password" autocomplete="current-password"></div><div class="fld"><label class="f">New password</label><input id="seNew" type="password" autocomplete="new-password"></div></div><div class="row" style="margin-top:10px"><button class="btn sm" id="sePwBtn">Change password</button></div></details>
+      ${me.role === "owner" ? `<details><summary>People who can sign in</summary>${list}
+       <div class="cg" style="margin-top:10px"><div class="fld"><label class="f">Username</label><input id="nuName" autocomplete="off"></div><div class="fld"><label class="f">Password</label><input id="nuPw" type="password" autocomplete="new-password"></div><div class="fld"><label class="f">Access</label><select id="nuRole"><option value="viewer">View only</option><option value="owner">Owner</option></select></div><div class="fld" style="align-self:end"><button class="btn sm" id="nuAdd">Add person</button></div></div></details>` : ""}
+      <span class="sub" id="seMsg"></span>`;
+  }
+
+  async function accessPane() {
+    const el = $("#setAccess"); if (!el) return;
+    el.innerHTML = await securityPane() || '<p class="sub">Nothing to set here.</p>'; icons && icons(el); wireSecurity();
   }
 
   async function settings() {
-    const host = $("#p-settings .grid.g2"); if (!host || built) return; built = true;
-    const sec = await securityCard();
-    host.insertAdjacentHTML("beforeend", (me.role === "owner" ? appearanceCard() : appearanceCard()) + (me.role === "owner" ? rulesCard() + notifyCard() : "") + sec);
-    icons && icons(host);
-    wireAppearance(); if (me.role === "owner") { wireRules(); wireNotify(); } wireSecurity();
+    if (built || !$("#setLook")) return; built = true;
+    $("#setLook").innerHTML = appearancePane(); wireAppearance();
+    if (me.role === "owner") { $("#setAlerts").innerHTML = notifyPane(); $("#setRulesBody").innerHTML = rulesPane(); wireRules(); wireNotify(); }
+    else { $("#setAlerts").innerHTML = '<p class="sub">Only the owner can set up alerts.</p>'; $("#setRules").style.display = "none"; }
+    icons && icons($("#p-settings")); await accessPane();
   }
 
   function wireAppearance() {
@@ -189,7 +190,7 @@ const CUST = (() => {
   }
 
   function wireRules() {
-    const sync = () => { $("#ruHrsBox").style.display = $("#ruHrs").checked ? "flex" : "none"; }; $("#ruHrs").onchange = sync; sync();
+    const sync = () => { $("#ruHrsBox").style.display = $("#ruHrs").checked ? "" : "none"; }; $("#ruHrs").onchange = sync; sync();
     $("#ruSave").onclick = guard(async () => {
       const n = id => +$("#" + id).value;
       await api("/api/config", { rules: { hours: { enabled: $("#ruHrs").checked, start: n("ruFrom"), end: n("ruTo"), days: $$("#ruDays input:checked").map(x => +x.value) }, direction: $("#ruDir").value,
@@ -214,8 +215,8 @@ const CUST = (() => {
     const o2 = $("#seOut2"); if (o2) o2.onclick = guard(async () => { await api("/api/auth/logout", {}, true); location.href = "/login"; });
     const oth = $("#seOthers"); if (oth) oth.onclick = guard(async () => { await api("/api/auth/sessions", {}); toast("Every other device was signed out.", "info", "Done"); });
     const pw = $("#sePwBtn"); if (pw) pw.onclick = guard(async () => { await api("/api/auth/password", { old: $("#seOld").value, new: $("#seNew").value }); $("#seOld").value = $("#seNew").value = ""; $("#seMsg").innerHTML = '<span class="up">Password changed. Other devices were signed out.</span>'; });
-    const add = $("#nuAdd"); if (add) add.onclick = guard(async () => { await api("/api/auth/users", { action: "add", username: $("#nuName").value, password: $("#nuPw").value, role: $("#nuRole").value }); built = false; $("#cardSecurity").remove(); settings(); });
-    $$("[data-del]").forEach(b => b.onclick = guard(async () => { if (!await confirmSheet("Remove " + b.dataset.del + "?", "They will be signed out and can no longer open the dashboard.", "Remove", true, b)) return; await api("/api/auth/users", { action: "remove", username: b.dataset.del }); built = false; $("#cardSecurity").remove(); settings(); }));
+    const add = $("#nuAdd"); if (add) add.onclick = guard(async () => { await api("/api/auth/users", { action: "add", username: $("#nuName").value, password: $("#nuPw").value, role: $("#nuRole").value }); accessPane(); });
+    $$("[data-del]").forEach(b => b.onclick = guard(async () => { if (!await confirmSheet("Remove " + b.dataset.del + "?", "They will be signed out and can no longer open the dashboard.", "Remove", true, b)) return; await api("/api/auth/users", { action: "remove", username: b.dataset.del }); accessPane(); }));
     $$("[data-reset]").forEach(b => b.onclick = guard(async () => { const p = prompt("New password for " + b.dataset.reset + " (10+ characters):"); if (!p) return; await api("/api/auth/users", { action: "reset", username: b.dataset.reset, password: p }); toast("Password changed and their devices signed out.", "info", "Done"); }));
   }
 
