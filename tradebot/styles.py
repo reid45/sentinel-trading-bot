@@ -20,9 +20,9 @@ INFO = {
              "Reads big-player footprints (open interest, top-trader positioning, large prints, order-book lean). Stop beyond the sweep; target the next liquidity pool (at least 2R).",
              "Stocks: 15-minute opening-range breakout with 1.5x relative volume, above VWAP, index agreeing; flat before the close.",
              "At most 3 trades a day. Optional AI sign-off on each confirmed setup."],
-        evidence="Honest status: we back-tested the crypto confirmation sequence (4 coins, 2 years of 15-minute candles, about 750 setups, costs included): average -0.10R in-sample and "
-                 "-0.27R out-of-sample, so it lost money. Opening-range breakouts on 46 stocks also lost, and big-player positioning had no market-neutral predictive power. "
-                 "The live-only checks (order book, large prints) could not be back-tested. It runs on practice money with a scorecard so you can judge it yourself.",
+        evidence="Final verdict: we back-tested the crypto confirmation sequence on 12 coins and 2 years of 15-minute candles (about 2,000 setups), trying 81 variations of target, time stop, direction and cost, "
+                 "down to maker-level fees. None of the 81 made money out-of-sample (best about -0.05R per trade; at retail fees about -0.2R, t about -6). Opening-range breakouts on 46 stocks also lost, and big-player positioning "
+                 "had no market-neutral predictive power. The live-only checks (order book, large prints) could not be back-tested. It runs on practice money with a scorecard so you can judge it yourself.",
         sources=("smart",)),
     "scalp": dict(
         name="Scalper (high frequency)", badge="Experimental", tone="warn",

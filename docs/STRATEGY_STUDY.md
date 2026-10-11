@@ -125,6 +125,16 @@ You asked for a high-frequency scalper and a patient day trader that follows the
 | Smart-money, stocks | First-hour and 5-minute opening-range breakouts with relative-volume and VWAP filters, 46 liquid US stocks | 0 of 60 settings profitable on 2 years of hourly bars (out-of-sample -9 to -15 bps per trade); 0 of 39 on 60 days of 5-minute bars (best -0.2 bps) |
 | "Following the big players" (public data) | Top-trader positioning, all-account long/short ratio, taker flow, open interest vs the next 1h and 4h return, 12 coins, 30 days | Looked significant when pooled, but **market-neutral** (coin vs coin at each step) top-trader positioning had no predictive power (t = 0.5). Only open interest rising with price and the crowd ratio showed a weak 1-hour effect (IC about 0.07, t about 2.5): far too small to pay a 16 bps round trip |
 
+### Result 4b: the final round (bigger sample, wider grid)
+
+Both styles were re-tested as hard as the data allows, so the verdict does not rest on one small test.
+
+* **Smart-money day trader, 12 coins x 2 years of 15-minute candles** (3x the first sample, about 2,000 setups). Same live code, 81 pre-declared variants: reward target 1.5R / 2R / 3R, time stop 4 / 8 / 16 hours, cost per side 0.08% / 0.05% / 0.02%, all trades / longs only / shorts only.
+  **0 of 81 positive out-of-sample, 0 of 81 positive in both halves.** At retail cost the average trade is about -0.2R (t about -6); at maker-level cost (0.02% a side) about -0.10R; the best single variant (shorts only, cheapest fees) was +0.05R in-sample and **-0.05R out-of-sample**. Slower time stops and bigger targets do not help. (`research/smart_final.py`)
+* **Scalper, 1-minute data re-run:** same result as before. 0 of 148 settings profitable in-sample; out-of-sample about -5 bps per trade at retail fees, about -1 bp at a zero-maker-fee tier with a 73% win rate. The gap is fees, not signal quality: the average winner is smaller than the round-trip cost.
+
+**Verdict:** neither style has an edge that survives costs on the data we can test. They stay in the app as clearly labelled practice-mode experiments (their scorecards will show real paper results if you run them), and the Trend style remains the only one we recommend.
+
 What was shipped anyway, and why: both styles run in **practice mode only**, behind switches, each with its own scorecard, honest evidence text, and
 guards (the scalper pauses itself when its last 40 trades average below zero after fees and shows how far your fee tier is from break-even; the smart-money
 trader trades at most 3 times a day, checks liquidity first and only acts after the full confirmation sequence). They exist so you can test your own fee
@@ -157,6 +167,7 @@ python research/ensemble_study.py           # the four-system blend
 python research/ensemble_union.py           # the single-position blend (worse)
 python research/fetch_micro.py              # 75 days of 1-minute candles with taker flow
 python research/scalp_study.py              # the scalper, two fee tiers
+python research/smart_final.py             # the smart-money trader: 12 coins, 81 variants (about 7 minutes on 8 cores)
 python research/orb_study.py                # stocks: first-hour opening-range breakout
 python research/orb5_study.py               # stocks: 5-minute opening range (60 days only)
 python research/footprint_study.py          # big-player positioning vs next-hour returns
