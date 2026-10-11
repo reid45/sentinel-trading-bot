@@ -23,12 +23,15 @@ const STRAT = (() => {
     const c = S.cfg, sm_ = c.smart, sc = c.scalp, fs = owner() ? "" : " disabled";
     const t = D.trend, m = D.smart, a = D.scalp;
     $("#p-strategies").innerHTML = `<div class="rise"><div class="card" style="--i:0;margin-bottom:14px"><h3>Choose how the bot trades</h3>
-      <p class="note" style="margin:0">Three styles, each with its own switch, settings and scorecard (the AI day trader and the chat live on the <b>Trader</b> page). The <b>Trend following</b> style is the one that held up in testing. The other two are here to try on practice money: they show their own results so you can judge them. You can run several at once; they share one account but never share a trade.</p></div>
+      <p class="note simple-only" style="margin:0">Sentinel trades with the <b>Trend following</b> style: slow, steady and the only one that held up in testing. Switch on <b>Pro mode</b> in Settings to see two experimental styles.</p>
+      <p class="note pro" style="margin:0">Three styles, each with its own switch, settings and scorecard (the AI day trader and the chat live on the <b>Trader</b> page). The <b>Trend following</b> style is the one that held up in testing. The other two are here to try on practice money: they show their own results so you can judge them. You can run several at once; they share one account but never share a trade.</p></div>
       <fieldset${fs} style="border:0;padding:0;margin:0"><div class="sgrid">
-      <div class="card" style="--i:1" id="stc_trend">${head(t)}${how(t)}<div id="stPerf_trend">${perfKpis(t)}</div>
-        <div class="callout warn" id="stOffPlan" style="margin:0 0 10px;display:none"></div><div class="callout" id="stAfford" style="margin:0 0 10px;display:none"></div><div class="row" style="gap:8px;flex-wrap:wrap"><span class="sub">Presets:</span><button class="btn sm" data-preset="trendmix" data-tip="The tested default: +34% over 3.4 years, worst dip 17%">Careful 0.3%</button><button class="btn sm pri" data-preset="balanced" data-tip="+54%, worst dip 27%: the best trade-off">Balanced 0.5%</button><button class="btn sm" data-preset="bold" data-tip="+88%, worst dip 49%">Bold 1%</button><button class="btn sm" id="stScan">Open the trend scanner</button></div></div>
+      <div class="card" style="--i:1" id="stc_trend">${head(t)}<div id="stPerf_trend">${perfKpis(t)}</div>
+        <div class="callout warn" id="stOffPlan" style="margin:0 0 10px;display:none"></div><div class="callout" id="stAfford" style="margin:0 0 10px;display:none"></div><div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn sm" id="stSet">Change risk or timeframe</button></div>
+        <details class="stmore"><summary>How it works and the evidence</summary>${how(t)}</details>
+        <div class="row pro" style="gap:8px;flex-wrap:wrap;margin-top:12px"><span class="sub">Presets:</span><button class="btn sm" data-preset="trendmix" data-tip="The tested default: +34% over 3.4 years, worst dip 17%">Careful 0.3%</button><button class="btn sm pri" data-preset="balanced" data-tip="+54%, worst dip 27%: the best trade-off">Balanced 0.5%</button><button class="btn sm" data-preset="bold" data-tip="+88%, worst dip 49%">Bold 1%</button><button class="btn sm" id="stScan">Open the trend scanner</button></div></div>
 
-      <div class="card" style="--i:2" id="stc_smart">${head(m)}${how(m)}<div id="stPerf_smart">${perfKpis(m)}</div>
+      <div class="card pro" style="--i:2" id="stc_smart">${head(m)}${how(m)}<div id="stPerf_smart">${perfKpis(m)}</div>
         <div class="form">${fld("Crypto", sw("smCrypto", sm_.crypto))}${fld("US stocks", sw("smStocks", sm_.stocks), "Opening-range version, during US market hours, long only")}
           ${fld("Markets to watch", `<select id="smMarkets">${opt([[3, "Top 3 by liquidity"], [5, "Top 5"], [8, "Top 8"], [12, "Top 12"]], sm_.markets)}</select>`, "Crypto only: the most liquid coins on your list are scanned first")}
           ${fld("Confirmations needed", `<select id="smScore">${opt([[4, "4: the bare sequence"], [5, "5: plus liquidity (default)"], [6, "6: plus a big-player clue"], [7, "7: everything agrees"]], sm_.min_score)}</select>`, "Out of 7: trend, sweep, displacement, retest, liquidity, and up to 2 big-player clues")}
@@ -36,7 +39,7 @@ const STRAT = (() => {
           ${fld("Min 24h volume $M (crypto)", num("smVol", sm_.min_dollar_vol_m, 10, 90), "Skips thin markets")}${fld("AI sign-off", sw("smAI", sm_.use_ai), "A final yes/no from your AI on each fully confirmed setup (a few cents a day at most). Rules alone trade if no AI is connected.")}</div>
         <div style="margin:14px 0 6px;font-weight:550;font-size:12.5px">What it is waiting for right now</div><div class="scroll" id="stWait" style="max-height:230px"></div></div>
 
-      <div class="card" style="--i:3" id="stc_scalp">${head(a)}${how(a)}<div id="stPerf_scalp">${perfKpis(a)}</div><div id="stBE"></div>
+      <div class="card pro" style="--i:3" id="stc_scalp">${head(a)}${how(a)}<div id="stPerf_scalp">${perfKpis(a)}</div><div id="stBE"></div>
         <div class="form">${fld("Fee tier", `<select id="scTier">${opt(Object.entries(FEES).map(([k, v]) => [k, v[0]]).concat([["custom", "Custom (type below)"]]), "custom")}</select>`)}
           ${fld("Maker fee (bps)", num("scMk", sc.maker_bps, 0.1, 80), "Limit orders that rest in the book. 1 bp = 0.01%")}${fld("Taker fee (bps)", num("scTk", sc.taker_bps, 0.1, 80), "Market orders, used for stops")}${fld("Slippage on stops (bps)", num("scSl", sc.slip_bps, 0.1, 80))}
           ${fld("Risk per scalp %", num("scRisk", sc.risk_pct, 0.05, 80), "Of the account, fees included. Small by design")}${fld("Max scalps per day", num("scMax", sc.max_trades_day, 10, 80))}${fld("Daily loss limit %", num("scLoss", sc.daily_loss_pct, 0.25, 80), "Stops for the day when reached")}
@@ -56,7 +59,7 @@ const STRAT = (() => {
       const ok = await confirmSheet("Apply the " + b.textContent.split(" (")[0] + " preset?", "Every crypto market switches to the trend mix on 4-hour candles and the risk limits change. Open swing trades must be closed first.", "Apply", false, b); if (!ok) return;
       try { await api("/api/preset", { name: b.dataset.preset }); } catch (e) { if (/open/.test(e.message) && await confirmSheet("Close open swing trades?", e.message + " Close them and continue?", "Close and apply", true, b)) await api("/api/preset", { name: b.dataset.preset, flatten: true }); else throw e; }
       toast("Preset applied", "win", "Done"); refresh(); }));
-    $("#stScan").onclick = () => go("trader");
+    $("#stScan").onclick = () => go("trader"); $("#stSet").onclick = () => go("settings");
     const patch = (sec, o) => api("/api/config", { [sec]: o }, true).then(refresh);
     $("#smCrypto").onchange = e => patch("smart", { crypto: e.target.checked }); $("#smStocks").onchange = e => patch("smart", { stocks: e.target.checked });
     $("#smMarkets").onchange = e => patch("smart", { markets: +e.target.value }); $("#smScore").onchange = e => patch("smart", { min_score: +e.target.value });

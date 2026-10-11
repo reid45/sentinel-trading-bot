@@ -71,3 +71,9 @@ input[type=range].risk::-moz-range-thumb{width:20px;height:20px;border-radius:50
 @media(max-width:980px){.setpage{grid-template-columns:1fr;height:auto}.spane{overflow:visible}.cg{grid-template-columns:1fr 1fr}}
 @media(max-width:520px){.cg{grid-template-columns:1fr}}
 @media(max-width:520px){.rticks button{font-size:0}.rticks button small{font-size:11.5px;color:var(--tx2)}}
+
+/* Strategies page: simple mode shows the Trend card only, cleanly */
+.simple-only{display:none}.simple .simple-only{display:block}
+.simple .sgrid{grid-template-columns:minmax(0,760px)}
+.stmore{border-top:1px solid var(--line);margin-top:14px;padding-top:10px}.stmore summary{cursor:pointer;font-weight:550;font-size:13px;list-style:none;display:flex;justify-content:space-between}
+.stmore summary::-webkit-details-marker{display:none}.stmore summary::after{content:"+";color:var(--tx3)}.stmore[open] summary::after{content:"\2013"}
