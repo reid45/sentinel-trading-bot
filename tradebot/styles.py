@@ -32,7 +32,7 @@ INFO = {
              "Trade size, fees (maker / taker / slippage), daily caps and the daily-loss limit are yours to set.",
              "Pauses itself if its last 40 trades average below zero after fees, and shows exactly how far fees are from break-even."],
         evidence="Honest status: in 75 days of 1-minute data none of 148 settings was profitable, even at a zero-maker-fee tier (best case about -1 bps per trade with a 73% win rate). "
-                 "Scalping only works when your fees are lower than the small edge. Use the fee settings and the break-even readout to see where you stand.",
+                 "A second round with bigger targets that clear fees (648 settings) also found none, and a live paper run won 1 of 19 trades. Scalping only works when your fees are lower than the small edge. Use the fee settings and the break-even readout to see where you stand.",
         sources=("scalp",)),
 }
 

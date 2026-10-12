@@ -140,6 +140,15 @@ guards (the scalper pauses itself when its last 40 trades average below zero aft
 trader trades at most 3 times a day, checks liquidity first and only acts after the full confirmation sequence). They exist so you can test your own fee
 tier, markets and settings against reality on paper instead of trusting anyone's claims, including ours.
 
+## Result 5: why the live scalper showed a 20% win rate, and two more attempts
+
+* **Live scalper:** 19 paper trades, 1 winner, -$4.37. The cause is arithmetic, not a bug: its profit target (0.6 ATR, about 2 to 3 bps on BTC) is smaller than its round-trip fees (4 bps even with limit orders on both sides), so a trade that "hits target" still loses money; and the fade buys dips in all four correlated coins at once, so one fast drop stopped out eight trades in three minutes.
+* **Scalper with targets that clear fees** (`research/scalp_wide.py`): targets 2 to 6 ATR, stops 2 to 6 ATR, holds 30 to 120 minutes, 648 settings, two fee tiers. Retail fees: **0 of 648 profitable even in-sample** (best about -4 bps). Zero-maker tier: 1 of 648 profitable in-sample (+0.03 bps) and 0 out-of-sample (best -0.05 bps). No fast scalping setting works with this signal.
+* **A different fast idea: market-neutral coin ranking** (`research/xsec_study.py`, `research/xsec_robust.py`): rank the 38 coins by the last L hours' move, go long the strongest 6 and short the weakest 6, re-rank every 4 to 72 hours (hourly candles, 3 years, costs charged on every change).
+  * Reversal (long losers, short winners) loses at every setting.
+  * Momentum at long lookbacks (1 to 3 weeks) works: with a daily re-rank, 14 of 24 lookback/rebalance combinations were positive over the full 3 years at retail cost, mostly between +15% and +38% a year on 1x gross capital, Sharpe 0.6 to 1.4, worst dip 20 to 48%. Short lookbacks (under 3 days) and fast re-ranking (every 4 hours) lose.
+  * **Caveats:** it is weak lately (the last 6 months were negative for most settings; the best lookback, 14 days, was about flat); it is the same momentum family as the trend bot, so it will have bad weeks at the same times; the 38-coin list is today's liquid coins (survivorship bias); funding payments on the shorts are not modelled; and it is a few percent a month, not fast money.
+
 ## What this means for the product
 
 * **Default strategy:** Trend mix, 4-hour candles, 38 liquid coins (two contracts whose Binance candles are frozen were removed), 0.3% risk per trade, up to 15 open trades.

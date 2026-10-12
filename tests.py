@@ -636,7 +636,10 @@ class ServerApi(unittest.TestCase):
         import http.client
         c = http.client.HTTPConnection("127.0.0.1", 18765, timeout=10)
         c.request("POST", "/api/engine", body=b"{}", headers={"Content-Type": "application/json", "Content-Length": "5000000"})
-        self.assertEqual(c.getresponse().status, 413)                                    # a huge declared body is refused before it is read
+        try:
+            self.assertEqual(c.getresponse().status, 413)                                # a huge declared body is refused before it is read
+        except ConnectionError:
+            pass                                                                         # on Windows the server closing early can reset the socket before the 413 is read: still a refusal
         c.close()
         code, b = self.call("/api/health")
         h = json.loads(b)
