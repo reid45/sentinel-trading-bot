@@ -21,7 +21,7 @@ const STRAT = (() => {
 
   function build() {
     const c = S.cfg, sm_ = c.smart, sc = c.scalp, fs = owner() ? "" : " disabled";
-    const t = D.trend, m = D.smart, a = D.scalp;
+    const t = D.trend, m = D.smart, a = D.scalp, bk = D.basket, bc = c.basket;
     $("#p-strategies").innerHTML = `<div class="rise"><div class="card" style="--i:0;margin-bottom:14px"><h3>Choose how the bot trades</h3>
       <p class="note simple-only" style="margin:0">Sentinel trades with the <b>Trend following</b> style: slow, steady and the only one that held up in testing. Switch on <b>Pro mode</b> in Settings to see two experimental styles.</p>
       <p class="note pro" style="margin:0">Three styles, each with its own switch, settings and scorecard (the AI day trader and the chat live on the <b>Trader</b> page). The <b>Trend following</b> style is the one that held up in testing. The other two are here to try on practice money: they show their own results so you can judge them. You can run several at once; they share one account but never share a trade.</p></div>
@@ -30,6 +30,12 @@ const STRAT = (() => {
         <div class="callout warn" id="stOffPlan" style="margin:0 0 10px;display:none"></div><div class="callout" id="stAfford" style="margin:0 0 10px;display:none"></div><div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn sm" id="stSet">Change risk or timeframe</button></div>
         <details class="stmore"><summary>How it works and the evidence</summary>${how(t)}</details>
         <div class="row pro" style="gap:8px;flex-wrap:wrap;margin-top:12px"><span class="sub">Presets:</span><button class="btn sm" data-preset="trendmix" data-tip="The tested default: +34% over 3.4 years, worst dip 17%">Careful 0.3%</button><button class="btn sm pri" data-preset="balanced" data-tip="+54%, worst dip 27%: the best trade-off">Balanced 0.5%</button><button class="btn sm" data-preset="bold" data-tip="+88%, worst dip 49%">Bold 1%</button><button class="btn sm" id="stScan">Open the trend scanner</button></div></div>
+
+      <div class="card pro" style="--i:2" id="stc_basket">${head(bk)}${how(bk)}<div id="stPerf_basket">${perfKpis(bk)}</div>
+        <div class="form">${fld("Lookback", `<select id="bkLook">${opt([[168, "7 days"], [336, "14 days (tested best)"], [504, "21 days"]], bc.lookback_h)}</select>`, "How far back coins are compared. 1 to 3 weeks worked; under 3 days lost")}
+          ${fld("Coins per side", `<select id="bkN">${opt([[4, "4 long + 4 short"], [6, "6 long + 6 short"], [8, "8 long + 8 short"]], bc.n)}</select>`)}
+          ${fld("Money used", `<select id="bkGross">${opt([[0.5, "0.5x (half the account)"], [1, "1x (the whole account, split long/short)"], [2, "2x (double: bigger swings)"]], bc.gross)}</select>`, "Total of all legs as a multiple of your account. The back-test used 1x")}</div>
+        <div style="margin:14px 0 6px;font-weight:550;font-size:12.5px">What it holds and when it re-ranks</div><div id="stBasket"></div></div>
 
       <div class="card pro" style="--i:2" id="stc_smart">${head(m)}${how(m)}<div id="stPerf_smart">${perfKpis(m)}</div>
         <div class="form">${fld("Crypto", sw("smCrypto", sm_.crypto))}${fld("US stocks", sw("smStocks", sm_.stocks), "Opening-range version, during US market hours, long only")}
@@ -54,13 +60,14 @@ const STRAT = (() => {
   }
 
   function wire() {
-    ["trend", "smart", "scalp"].forEach(id => { $("#sw_" + id).onchange = guard(async e => { await api("/api/style", { style: id, action: e.target.checked ? "on" : "off" }); toast(e.target.checked ? "Switched on" : "Switched off", "info", D[id].name); await refresh(); poll(true); }); });
+    ["trend", "basket", "smart", "scalp"].forEach(id => { $("#sw_" + id).onchange = guard(async e => { await api("/api/style", { style: id, action: e.target.checked ? "on" : "off" }); toast(e.target.checked ? "Switched on" : "Switched off", "info", D[id].name); await refresh(); poll(true); }); });
     $$("[data-preset]").forEach(b => b.onclick = guard(async () => {
       const ok = await confirmSheet("Apply the " + b.textContent.split(" (")[0] + " preset?", "Every crypto market switches to the trend mix on 4-hour candles and the risk limits change. Open swing trades must be closed first.", "Apply", false, b); if (!ok) return;
       try { await api("/api/preset", { name: b.dataset.preset }); } catch (e) { if (/open/.test(e.message) && await confirmSheet("Close open swing trades?", e.message + " Close them and continue?", "Close and apply", true, b)) await api("/api/preset", { name: b.dataset.preset, flatten: true }); else throw e; }
       toast("Preset applied", "win", "Done"); refresh(); }));
     $("#stScan").onclick = () => go("trader"); $("#stSet").onclick = () => go("settings");
     const patch = (sec, o) => api("/api/config", { [sec]: o }, true).then(refresh);
+    $("#bkLook").onchange = e => patch("basket", { lookback_h: +e.target.value }); $("#bkN").onchange = e => patch("basket", { n: +e.target.value }); $("#bkGross").onchange = e => patch("basket", { gross: +e.target.value });
     $("#smCrypto").onchange = e => patch("smart", { crypto: e.target.checked }); $("#smStocks").onchange = e => patch("smart", { stocks: e.target.checked });
     $("#smMarkets").onchange = e => patch("smart", { markets: +e.target.value }); $("#smScore").onchange = e => patch("smart", { min_score: +e.target.value });
     $("#smMax").onchange = e => patch("smart", { max_trades_day: +e.target.value }); $("#smRisk").onchange = e => patch("smart", { risk_pct: +e.target.value });
@@ -78,13 +85,15 @@ const STRAT = (() => {
   const age = t => { const s = Math.max(0, (Date.now() - t) / 1000); return s < 90 ? "just now" : s < 5400 ? Math.round(s / 60) + " min ago" : Math.round(s / 3600) + " h ago"; };
 
   function paint() {
-    ["trend", "smart", "scalp"].forEach(id => {
+    ["trend", "basket", "smart", "scalp"].forEach(id => {
       const d = D[id], on = d.enabled; const sw_ = $("#sw_" + id); if (sw_ && document.activeElement !== sw_) sw_.checked = on;
       $("#stOn_" + id).textContent = on ? "On" : "Off"; $("#stOn_" + id).className = "sub " + (on ? "up" : "");
       setHTML($("#stPerf_" + id), perfKpis(d));
     });
     const op = $("#stOffPlan"), ts = D.trend.settings;
     if (op) { op.style.display = ts && ts.off_plan ? "" : "none"; if (ts) op.innerHTML = `<b>Heads up.</b> The swing bot is on <b>${esc(ts.tf)}</b> candles at <b>${ts.risk}%</b> risk per trade. The tested setups are <b>4h</b> candles at <b>0.3% to 0.5%</b> (1% at most): faster candles lost money after fees in every test, and bigger risk makes a bad week hurt more. Press <b>Balanced</b> (0.5%) or <b>Careful</b> (0.3%) below to restore a tested setup.`; }
+    const bs = D.basket.status || {}, bl = (S.engine.positions || []).filter(p => p.source === "basket").sort((x, y) => y.side - x.side || x.symbol.localeCompare(y.symbol));
+    setHTML($("#stBasket"), !D.basket.enabled ? '<div class="empty">Switch the style on. It ranks the coins right away, then once a day.</div>' : `<div class="note" style="margin-bottom:8px">${esc(bs.msg || "Ranking the coins...")}${bs.next ? ` <span class="sub">Next ranking ${new Date(bs.next).toLocaleString()}.</span>` : ""}</div>${bl.length ? `<table><tr><th>Coin</th><th>Side</th><th>Profit</th></tr>${bl.map(p => `<tr><td class="t"><b>${esc(p.symbol.replace("USDT", ""))}</b></td><td>${p.side === 1 ? '<span class="up">long</span>' : '<span class="down">short</span>'}</td><td class="${cls(p.upnl)}">${sm(p.upnl)}</td></tr>`).join("")}</table>` : ""}`);
     const st = D.smart.status || {}, rows = Object.entries(st).sort((a, b) => b[1].t - a[1].t);
     setHTML($("#stWait"), !D.smart.enabled ? '<div class="empty">Switch the style on to see what it is waiting for.</div>' : rows.length ? `<table><tr><th>Market</th><th>Status</th><th>When</th></tr>${rows.map(([k, v]) => `<tr><td class="t"><b>${esc(k.replace("USDT", ""))}</b></td><td style="white-space:normal">${esc(v.text)}</td><td class="sub">${age(v.t)}</td></tr>`).join("")}</table>` : '<div class="empty">Scanning on the next closed candle...</div>');
     const a = D.scalp.scalp, be = a.breakeven;

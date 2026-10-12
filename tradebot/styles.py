@@ -24,6 +24,17 @@ INFO = {
                  "down to maker-level fees. None of the 81 made money out-of-sample (best about -0.05R per trade; at retail fees about -0.2R, t about -6). Opening-range breakouts on 46 stocks also lost, and big-player positioning "
                  "had no market-neutral predictive power. The live-only checks (order book, large prints) could not be back-tested. It runs on practice money with a scorecard so you can judge it yourself.",
         sources=("smart",)),
+    "basket": dict(
+        name="Momentum basket", badge="Experimental", tone="warn",
+        tagline="Market-neutral: long the strongest coins, short the weakest, ranked once a day. Slow, not fast.",
+        how=["Once a day it ranks the coins by how far they moved over the last 14 days.",
+             "It goes long the 6 strongest and short the 6 weakest with equal money on each leg, so the market's direction mostly cancels out.",
+             "It holds each leg until the next ranking (a 15% protective stop is the only other exit). About 12 small positions, a few changes a day.",
+             "Lookback, basket size and how much money it uses are yours to set. Practice mode only."],
+        evidence="Back-test (38 coins, 3 years of hourly candles, costs charged on every change): 1 to 3 week lookbacks with a daily re-rank were positive, about +33% a year on the money used at a 14-day lookback "
+                 "(Sharpe 1.2, worst dip 26%); reversal and short lookbacks lost. Honest limits: the last 6 months were about flat, shorting costs funding that we did not model, the coin list is today's liquid coins, "
+                 "and it is the same momentum family as the trend bot, so bad weeks tend to arrive together. A few percent a month at best, not fast money.",
+        sources=("basket",)),
     "scalp": dict(
         name="Scalper (high frequency)", badge="Experimental", tone="warn",
         tagline="Many very small, very fast trades on 1-minute candles with limit orders. Practice mode only.",
@@ -64,6 +75,9 @@ def overview(store, engine):
         elif sid == "smart":
             d["enabled"] = bool(cfg["smart"]["enabled"])
             d["status"] = {k: dict(text=v[0], t=v[1]) for k, v in engine.smart.status.items()}
+        elif sid == "basket":
+            d["enabled"] = bool(cfg["basket"]["enabled"])
+            d["status"] = engine.basket.status
         else:
             d["enabled"] = bool(cfg["scalp"]["enabled"])
             st = scalper.stats(store)

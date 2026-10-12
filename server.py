@@ -296,9 +296,9 @@ def preset_action(b):
 def style_action(b):
     """Switch a bot style on or off; the scalper's 'restart' clears its auto-pause and starts a fresh scorecard."""
     sid, act = b.get("style"), b.get("action")
-    if sid not in ("trend", "smart", "scalp") or act not in ("on", "off", "restart"):
+    if sid not in ("trend", "smart", "scalp", "basket") or act not in ("on", "off", "restart"):
         return 400, {"error": "bad request"}
-    if sid in ("smart", "scalp") and act in ("on", "restart") and store.cfg["mode"] == "live":
+    if sid in ("smart", "scalp", "basket") and act in ("on", "restart") and store.cfg["mode"] == "live":
         return 400, {"error": "this style runs in practice mode only; switch the account to Paper mode first"}
     if sid == "trend":
         engine.start() if act == "on" else engine.stop()

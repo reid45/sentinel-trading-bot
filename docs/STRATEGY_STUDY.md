@@ -149,6 +149,8 @@ tier, markets and settings against reality on paper instead of trusting anyone's
   * Momentum at long lookbacks (1 to 3 weeks) works: with a daily re-rank, 14 of 24 lookback/rebalance combinations were positive over the full 3 years at retail cost, mostly between +15% and +38% a year on 1x gross capital, Sharpe 0.6 to 1.4, worst dip 20 to 48%. Short lookbacks (under 3 days) and fast re-ranking (every 4 hours) lose.
   * **Caveats:** it is weak lately (the last 6 months were negative for most settings; the best lookback, 14 days, was about flat); it is the same momentum family as the trend bot, so it will have bad weeks at the same times; the 38-coin list is today's liquid coins (survivorship bias); funding payments on the shorts are not modelled; and it is a few percent a month, not fast money.
 
+**Shipped as a fourth paper style:** the **Momentum basket** (`tradebot/basket.py`): 14-day lookback, 6 long and 6 short, re-ranked daily, 15% protective stop per leg, own position book, 0.5x to 2x of the account (default 1x). It runs in practice mode with its own scorecard so the back-test can be checked against live results.
+
 ## What this means for the product
 
 * **Default strategy:** Trend mix, 4-hour candles, 38 liquid coins (two contracts whose Binance candles are frozen were removed), 0.3% risk per trade, up to 15 open trades.

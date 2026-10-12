@@ -1497,6 +1497,73 @@ class PlaybookTests(unittest.TestCase):
         self.assertEqual(playbook.footprint_votes(dict(oi_chg=0.01, big_flow=0.4, top_chg=0.05), dict(imb=0.3), -1, 0.01), [])   # all clues point the other way: no votes
 
 
+class BasketTests(unittest.TestCase):
+    SYMS = ["C%02dUSDT" % i for i in range(14)]
+
+    def mk(self, moves=None, **over):
+        bc = dict(enabled=True, lookback_h=48, n=3, gross=1.0, rebalance_h=24, stop_pct=15.0)
+        bc.update(over)
+        base = dict(DEFAULTS["instruments"][0])
+        ins = [dict(base, symbol=sym, id="futures:%s:4h" % sym, market="futures") for sym in self.SYMS]
+        self.s = mk_store(instruments=ins, basket=bc, risk=dict(max_positions=2))     # max_positions 2 proves the basket has its own book
+        self.moves = moves or {sym: (i - 6.5) / 100.0 for i, sym in enumerate(self.SYMS)}    # C00 weakest ... C13 strongest
+
+        def fetch(m, sym, tf, n):
+            r = self.moves[sym]
+            return [(i * 3600000, 100.0, 100.5, 99.5, 100.0 if i < n - 1 else 100.0 * (1 + r), 10.0) for i in range(n)]
+        self.e = Engine(self.s, fetcher=fetch, pricer=lambda m, sym: 100.0 * (1 + self.moves[sym]))
+        self.e._lot = lambda inst: None
+        return self.e.basket
+
+    def legs(self):
+        return {p["symbol"]: p for p in self.s.positions().values() if p.get("source") == "basket"}
+
+    def test_longs_strongest_shorts_weakest_equal_money(self):
+        b = self.mk()
+        b.tick()
+        L = self.legs()
+        self.assertEqual(len(L), 6)                                                          # 3 long + 3 short, despite max_positions=2
+        self.assertEqual({s for s, p in L.items() if p["side"] == 1}, {"C11USDT", "C12USDT", "C13USDT"})
+        self.assertEqual({s for s, p in L.items() if p["side"] == -1}, {"C00USDT", "C01USDT", "C02USDT"})
+        notional = [p["qty"] * p["entry"] for p in L.values()]
+        eq = self.e.equity()
+        for nv in notional:
+            self.assertAlmostEqual(nv / (eq * 1.0 / 6), 1.0, delta=0.05)                    # each leg is gross/(2n) of the account
+        self.assertGreater(L["C13USDT"]["stop"], 0)
+        self.assertLess(L["C13USDT"]["stop"], L["C13USDT"]["entry"])                         # long stop below, short stop above
+        self.assertGreater(L["C00USDT"]["stop"], L["C00USDT"]["entry"])
+
+    def test_not_again_before_the_interval_and_rebalance_keeps_unchanged_legs(self):
+        b = self.mk()
+        b.tick()
+        ids = {s: p["t_open"] for s, p in self.legs().items()}
+        b.tick()                                                                              # same hour: nothing happens
+        self.assertEqual({s: p["t_open"] for s, p in self.legs().items()}, ids)
+        self.moves["C13USDT"], self.moves["C05USDT"] = -0.2, 0.2                              # the leader collapses, a middle coin surges
+        self.s.put("basket_last", 0)
+        b.tick()
+        L = self.legs()
+        self.assertNotIn("C13USDT", {s for s, p in L.items() if p["side"] == 1})
+        self.assertIn("C05USDT", {s for s, p in L.items() if p["side"] == 1})
+        self.assertEqual(L["C12USDT"]["t_open"], ids["C12USDT"])                              # an unchanged leg is held, not churned
+        self.assertTrue(any(t["reason"] == "rebalance" and t["source"] == "basket" for t in self.s.trades(20)))
+
+    def test_long_only_rule_pauses_it(self):
+        b = self.mk()
+        self.s.save_cfg({"rules": {"direction": "long"}})
+        b.tick()
+        self.assertEqual(self.legs(), {})
+        self.assertIn("long", b.status["msg"])
+
+    def test_wide_stop_closes_a_leg(self):
+        b = self.mk()
+        b.tick()
+        self.moves["C13USDT"] = -0.5                                                          # a long leg collapses past its stop
+        b.tick()
+        self.assertNotIn("C13USDT", self.legs())
+        self.assertTrue(any(t["reason"] == "stop" and t["symbol"] == "C13USDT" for t in self.s.trades(20)))
+
+
 class SmartEngineTests(unittest.TestCase):
     build_crypto = PlaybookTests.build_crypto
 
@@ -1570,7 +1637,7 @@ class StyleApi(unittest.TestCase):
             srv.store.save_cfg({"mode": "paper"})
             import urllib.request
             d = json.loads(urllib.request.urlopen("http://127.0.0.1:18765/api/styles").read())
-            self.assertEqual(set(d), {"trend", "smart", "scalp"})
+            self.assertEqual(set(d), {"trend", "basket", "smart", "scalp"})
             self.assertEqual(d["trend"]["badge"], "Recommended")
             self.assertTrue(all(k in d["scalp"] for k in ("scalp", "perf", "evidence", "how")))
             self.assertEqual(srv.style_action({"style": "scalp", "action": "on"})[0], 200)
@@ -1580,9 +1647,13 @@ class StyleApi(unittest.TestCase):
             self.assertEqual(srv.style_action({"style": "smart", "action": "on"})[0], 200)
             self.assertEqual(srv.style_action({"style": "smart", "action": "off"})[0], 200)
             self.assertFalse(srv.store.cfg["smart"]["enabled"])
+            self.assertEqual(srv.style_action({"style": "basket", "action": "on"})[0], 200)
+            self.assertTrue(srv.store.cfg["basket"]["enabled"])
+            self.assertEqual(srv.style_action({"style": "basket", "action": "off"})[0], 200)
             self.assertEqual(srv.style_action({"style": "nope", "action": "on"})[0], 400)
             srv.store.cfg["mode"] = "live"
             self.assertEqual(srv.style_action({"style": "scalp", "action": "on"})[0], 400)          # fast styles are practice-only
+            self.assertEqual(srv.style_action({"style": "basket", "action": "on"})[0], 400)
         finally:
             srv.engine.stop()
             srv.store.cfg = before

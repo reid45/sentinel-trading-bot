@@ -25,7 +25,7 @@ def entry_allowed(store, inst, side, risk_usd, source, equity, poss, now_ms=None
     if side and ((d == "long" and side == -1) or (d == "short" and side == 1)):
         return False, "your rules allow %s trades only" % d
 
-    if source == "scalp":                      # the scalper has its own caps (trades per day, daily loss, auto-pause)
+    if source in ("scalp", "basket"):          # the scalper has its own caps (trades per day, daily loss, auto-pause); the basket opens about 12 legs once a day by design
         return True, ""
     trades = store.trades(80)
     open_today = sum(1 for p in poss.values() if p.get("t_open", 0) >= _day_start_ms(now_ms))

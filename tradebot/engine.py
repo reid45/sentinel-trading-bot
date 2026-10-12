@@ -3,6 +3,7 @@ Paper mode simulates fills (same costs as the backtester). Live mode (futures on
 import math, threading, time, traceback
 from concurrent.futures import ThreadPoolExecutor
 from . import data, analyst, daytrader, rules
+from .basket import Basket
 from .scalper import Scalper
 from .smart import Smart
 from .backtest import MARKET_COSTS, TF_HOURS
@@ -31,6 +32,7 @@ class Engine:
         self.day_stats = dict(scans=0, candidates=0, trades=0, last=0)
         self.scalper = Scalper(self)
         self.smart = Smart(self)
+        self.basket = Basket(self)
 
     # ------------------------------------------------------------------ lifecycle
     def migrate_accounting(self):
@@ -183,6 +185,11 @@ class Engine:
                 self.smart.tick()
             except Exception as ex:
                 self.s.event("error", "smart-money trader: " + str(ex)[:100])
+        if cfg["basket"].get("enabled"):
+            try:
+                self.basket.tick()
+            except Exception as ex:
+                self.s.event("error", "momentum basket: " + str(ex)[:100])
         self._risk_guards()
         self.last_cycle = t
         if t - self.last_snapshot >= 60000:
@@ -306,7 +313,7 @@ class Engine:
         poss = self.s.positions()
         if inst["id"] in poss:
             return False, "already in position"
-        if source != "scalp" and len([p for p in poss.values() if p.get("source") != "scalp"]) >= r["max_positions"]:       # scalps have their own small book
+        if source not in ("scalp", "basket") and len([p for p in poss.values() if p.get("source") not in ("scalp", "basket")]) >= r["max_positions"]:       # scalps and the momentum basket have their own books
             return False, "max positions reached"
         if self.s.get("daily_block"):
             return False, "daily loss limit hit"
@@ -419,7 +426,7 @@ class Engine:
 
     def _inst_for(self, inst_id):
         """Config instrument, a trendmix sleeve ('<id>#<name>'), or the pseudo-instrument a day-trading position lives under ('day:' + base id)."""
-        for style in ("scalp", "smart"):                              # '<style>:<watchlist id>'
+        for style in ("scalp", "smart", "basket"):                    # '<style>:<watchlist id>'
             if inst_id.startswith(style + ":"):
                 b = next((i for i in self.s.cfg["instruments"] if i["id"] == inst_id[len(style) + 1:]), None)
                 return self.style_inst(style, b) if b else None
@@ -434,7 +441,7 @@ class Engine:
 
     def style_inst(self, style, base):
         """Pseudo-instrument a scalper / smart-money position lives under: '<style>:' + the market's watchlist id."""
-        tf = {"scalp": "1m", "smart": self.s.cfg["smart"]["tf"]}[style]
+        tf = {"scalp": "1m", "smart": self.s.cfg["smart"]["tf"], "basket": "1h"}[style]
         return dict(base, id="%s:%s" % (style, base["id"]), tf=tf, strategy=style, params={"trail": 0}, enabled=True)
 
     # ------------------------------------------------------------------ AI day trading
@@ -596,7 +603,7 @@ class Engine:
             eq = self.equity()
             budget = eq * self.s.cfg["risk"]["per_trade_pct"] / 100
             for pid, pos in list(self.s.positions().items()):
-                if pos.get("source") in ("scalp", "smart", "day"):
+                if pos.get("source") in ("scalp", "smart", "day", "basket"):
                     continue                                                  # those styles size themselves from their own risk settings
                 inst = self._inst_for(pid)
                 if not inst or budget <= 0:
